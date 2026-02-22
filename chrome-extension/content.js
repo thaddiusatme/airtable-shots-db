@@ -14,35 +14,62 @@ async function waitForElement(selector, timeout = 5000) {
 async function openTranscriptPanel() {
   console.log('Attempting to open transcript panel...');
   
-  // Look for the "Show transcript" button
-  // YouTube structure: button with aria-label or text containing "transcript"
-  const buttons = Array.from(document.querySelectorAll('button, ytd-button-renderer'));
-  
-  const transcriptButton = buttons.find(btn => {
-    const text = btn.textContent?.toLowerCase() || '';
-    const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-    return text.includes('transcript') || ariaLabel.includes('transcript');
-  });
-  
-  if (transcriptButton) {
-    console.log('Found transcript button, clicking...');
-    transcriptButton.click();
-    // Wait a bit for panel to appear
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  // Strategy 1: Check if panel is already visible but hidden
+  const existingPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]');
+  if (existingPanel && existingPanel.getAttribute('visibility') !== 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN') {
+    console.log('Transcript panel already visible');
     return true;
   }
   
-  // Alternative: look for the engagement panel button
-  const engagementPanels = document.querySelectorAll('ytd-engagement-panel-title-header-renderer button');
-  for (const btn of engagementPanels) {
-    if (btn.textContent?.toLowerCase().includes('transcript')) {
-      console.log('Found engagement panel transcript button, clicking...');
-      btn.click();
-      await new Promise(resolve => setTimeout(resolve, 1000));
+  // Strategy 2: Look for the three-dot menu button and transcript option
+  // First, try to find "Show transcript" in the description area
+  const descriptionButtons = document.querySelectorAll('ytd-video-description-transcript-section-renderer button');
+  if (descriptionButtons.length > 0) {
+    console.log('Found transcript button in description area, clicking...');
+    descriptionButtons[0].click();
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    return true;
+  }
+  
+  // Strategy 3: Look for menu items (three-dot menu)
+  const menuItems = document.querySelectorAll('ytd-menu-service-item-renderer, tp-yt-paper-item');
+  for (const item of menuItems) {
+    const text = item.textContent?.toLowerCase() || '';
+    if (text.includes('transcript') || text.includes('show transcript')) {
+      console.log('Found transcript in menu item, clicking...');
+      item.click();
+      await new Promise(resolve => setTimeout(resolve, 1500));
       return true;
     }
   }
   
+  // Strategy 4: Generic button search
+  const allButtons = document.querySelectorAll('button, ytd-button-renderer, a[role="button"]');
+  for (const btn of allButtons) {
+    const text = btn.textContent?.toLowerCase() || '';
+    const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+    
+    if (text.includes('show transcript') || ariaLabel.includes('show transcript')) {
+      console.log('Found generic transcript button, clicking...');
+      btn.click();
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return true;
+    }
+  }
+  
+  // Strategy 5: Try engagement panel sections directly
+  const engagementSections = document.querySelectorAll('ytd-structured-description-content-renderer button');
+  for (const btn of engagementSections) {
+    const text = btn.textContent?.toLowerCase() || '';
+    if (text.includes('transcript')) {
+      console.log('Found transcript in structured description, clicking...');
+      btn.click();
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return true;
+    }
+  }
+  
+  console.log('Could not find transcript button with any strategy');
   return false;
 }
 
@@ -72,14 +99,22 @@ async function extractTranscript() {
       const opened = await openTranscriptPanel();
       
       if (opened) {
-        // Wait for panel to load
-        transcriptPanel = await waitForElement('ytd-transcript-renderer', 3000);
+        // Wait for panel to load with multiple attempts
+        transcriptPanel = await waitForElement('ytd-transcript-renderer', 5000);
+      }
+      
+      // Try alternative engagement panel selector
+      if (!transcriptPanel) {
+        const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]');
+        if (engagementPanel) {
+          transcriptPanel = engagementPanel.querySelector('ytd-transcript-renderer');
+        }
       }
     }
     
     if (!transcriptPanel) {
       return { 
-        error: 'Could not find or open transcript panel. This video may not have captions available.',
+        error: 'Could not find or open transcript panel. Try manually clicking "Show transcript" first, then extract again.',
         videoId,
         videoTitle
       };

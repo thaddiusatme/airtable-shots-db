@@ -173,11 +173,9 @@ async function saveToAirtable() {
   }
 }
 
-// Open settings (for now, just show instructions)
+// Open settings page in a new tab
 function openSettings() {
-  showStatus('Settings coming soon! For now, set credentials in Chrome DevTools console:', 'info');
-  console.log('To set Airtable credentials, run:');
-  console.log('chrome.storage.sync.set({ airtableApiKey: "YOUR_KEY", airtableBaseId: "YOUR_BASE_ID" })');
+  chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
 }
 
 // Event listeners

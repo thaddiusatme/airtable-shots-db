@@ -157,6 +157,27 @@ async function extractTranscript() {
     
     console.log(`Extracted ${segments.length} segments, ${transcriptText.length} characters`);
     
+    // Extract channel info from DOM
+    const channelLink = document.querySelector('ytd-video-owner-renderer ytd-channel-name a') ||
+                        document.querySelector('#owner a[href*="/channel/"]') ||
+                        document.querySelector('#owner a[href*="/@"]');
+    const channelName = document.querySelector('ytd-video-owner-renderer ytd-channel-name yt-formatted-string')?.textContent?.trim() ||
+                        document.querySelector('#owner ytd-channel-name')?.textContent?.trim() ||
+                        '';
+    let channelId = '';
+    let channelUrl = '';
+    if (channelLink) {
+      channelUrl = channelLink.href || '';
+      // Extract channel ID or handle from URL
+      const channelMatch = channelUrl.match(/\/channel\/(UC[a-zA-Z0-9_-]+)/);
+      const handleMatch = channelUrl.match(/\/@([^/?]+)/);
+      if (channelMatch) {
+        channelId = channelMatch[1];
+      } else if (handleMatch) {
+        channelId = '@' + handleMatch[1];
+      }
+    }
+
     return {
       videoId,
       videoTitle,
@@ -164,7 +185,10 @@ async function extractTranscript() {
       language,
       source: 'youtube-web-ui-dom',
       fetchedAt: new Date().toISOString(),
-      segmentCount: segments.length
+      segmentCount: segments.length,
+      channelName,
+      channelId,
+      channelUrl
     };
     
   } catch (error) {

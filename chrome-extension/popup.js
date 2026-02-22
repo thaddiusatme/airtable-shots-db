@@ -89,6 +89,68 @@ async function extractTranscript() {
   }
 }
 
+// Upsert channel record in Airtable — returns record ID or null
+async function upsertChannel(apiKey, baseId, channelData) {
+  if (!channelData.channelId || !channelData.channelName) {
+    console.log('Missing channel info, skipping channel upsert');
+    return null;
+  }
+
+  try {
+    // Look up existing channel by handle
+    const findUrl = `https://api.airtable.com/v0/${baseId}/Channels?filterByFormula=` +
+      encodeURIComponent(`AND({Platform}='YouTube', {Channel Handle}='${channelData.channelId}')`);
+
+    const findResponse = await fetch(findUrl, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!findResponse.ok) {
+      console.error('Channel lookup failed:', await findResponse.text());
+      return null;
+    }
+
+    const findResult = await findResponse.json();
+
+    if (findResult.records.length > 0) {
+      console.log('Found existing channel:', findResult.records[0].id);
+      return findResult.records[0].id;
+    }
+
+    // Create new channel record
+    const createResponse = await fetch(`https://api.airtable.com/v0/${baseId}/Channels`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        fields: {
+          'Channel Name': channelData.channelName,
+          'Platform': 'YouTube',
+          'Channel Handle': channelData.channelId,
+          'Channel URL': channelData.channelUrl || `https://www.youtube.com/channel/${channelData.channelId}`
+        }
+      })
+    });
+
+    if (!createResponse.ok) {
+      console.error('Channel create failed:', await createResponse.text());
+      return null;
+    }
+
+    const created = await createResponse.json();
+    console.log('Created new channel:', created.id);
+    return created.id;
+  } catch (error) {
+    console.error('Channel upsert error:', error);
+    return null;
+  }
+}
+
 // Save transcript to Airtable
 async function saveToAirtable() {
   if (!currentTranscriptData) {
@@ -136,24 +198,39 @@ async function saveToAirtable() {
       // Video not in Airtable yet — create a new record
       const createUrl = `https://api.airtable.com/v0/${airtableBaseId}/Videos`;
       
+      // Upsert channel record
+      const channelRecordId = await upsertChannel(airtableApiKey, airtableBaseId, {
+        channelId: currentTranscriptData.channelId,
+        channelName: currentTranscriptData.channelName,
+        channelUrl: currentTranscriptData.channelUrl
+      });
+
+      // Build fields for new video record
+      const thumbnailUrl = `https://i.ytimg.com/vi/${currentTranscriptData.videoId}/hqdefault.jpg`;
+      const createFields = {
+        'Video Title': currentTranscriptData.videoTitle,
+        'Video ID': currentTranscriptData.videoId,
+        'Platform': 'YouTube',
+        'Video URL': `https://www.youtube.com/watch?v=${currentTranscriptData.videoId}`,
+        'Triage Status': 'Queued',
+        'Thumbnail URL': thumbnailUrl,
+        'Thumbnail (Image)': [{ url: thumbnailUrl }],
+        'Transcript (Full)': currentTranscriptData.transcript,
+        'Transcript Language': currentTranscriptData.language,
+        'Transcript Source': currentTranscriptData.source
+      };
+
+      if (channelRecordId) {
+        createFields['Channel'] = [channelRecordId];
+      }
+
       saveResponse = await fetch(createUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${airtableApiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          fields: {
-            'Video Title': currentTranscriptData.videoTitle,
-            'Video ID': currentTranscriptData.videoId,
-            'Platform': 'YouTube',
-            'Video URL': `https://www.youtube.com/watch?v=${currentTranscriptData.videoId}`,
-            'Triage Status': 'Queued',
-            'Transcript (Full)': currentTranscriptData.transcript,
-            'Transcript Language': currentTranscriptData.language,
-            'Transcript Source': currentTranscriptData.source
-          }
-        })
+        body: JSON.stringify({ fields: createFields })
       });
     } else {
       // Video exists — update with transcript

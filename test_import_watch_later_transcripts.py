@@ -20,8 +20,9 @@ class TestTranscriptFetch:
         """When transcript is unavailable, fetch_transcript should return None."""
         from import_watch_later import fetch_transcript
         
-        with patch("import_watch_later.YouTubeTranscriptApi.get_transcript") as mock_get:
-            mock_get.side_effect = Exception("Transcript unavailable")
+        with patch("import_watch_later.YouTubeTranscriptApi") as MockAPI:
+            mock_instance = MockAPI.return_value
+            mock_instance.fetch.side_effect = Exception("Transcript unavailable")
             
             result = fetch_transcript("video123", languages=["en"])
             assert result is None
@@ -30,13 +31,18 @@ class TestTranscriptFetch:
         """When transcript exists, fetch_transcript should return transcript data."""
         from import_watch_later import fetch_transcript
         
-        mock_transcript = [
+        mock_segments = [
             {"text": "Hello world", "start": 0.0, "duration": 2.0},
             {"text": "This is a test", "start": 2.0, "duration": 3.0},
         ]
         
-        with patch("import_watch_later.YouTubeTranscriptApi.get_transcript") as mock_get:
-            mock_get.return_value = mock_transcript
+        with patch("import_watch_later.YouTubeTranscriptApi") as MockAPI:
+            mock_instance = MockAPI.return_value
+            mock_fetched = Mock()
+            mock_snippet_objs = [Mock(text=s["text"]) for s in mock_segments]
+            mock_fetched.snippets = mock_snippet_objs
+            mock_fetched.language_code = "en"
+            mock_instance.fetch.return_value = mock_fetched
             
             result = fetch_transcript("video123", languages=["en"])
             
@@ -51,11 +57,13 @@ class TestTranscriptFetch:
         """fetch_transcript should try fallback languages when primary fails."""
         from import_watch_later import fetch_transcript
         
-        with patch("import_watch_later.YouTubeTranscriptApi.get_transcript") as mock_get:
-            mock_get.side_effect = [
-                Exception("en not available"),
-                [{"text": "Hola mundo", "start": 0.0, "duration": 2.0}]
-            ]
+        with patch("import_watch_later.YouTubeTranscriptApi") as MockAPI:
+            mock_instance = MockAPI.return_value
+            mock_fetched = Mock()
+            mock_snippet = Mock(text="Hola mundo")
+            mock_fetched.snippets = [mock_snippet]
+            mock_fetched.language_code = "es"
+            mock_instance.fetch.return_value = mock_fetched
             
             result = fetch_transcript("video123", languages=["en", "es"])
             

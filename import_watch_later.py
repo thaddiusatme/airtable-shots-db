@@ -181,18 +181,17 @@ def resolve_source_playlist_id(youtube, *, playlist_id: Optional[str], playlist_
 
 def fetch_transcript(video_id: str, languages: list[str]) -> Optional[dict[str, str]]:
     """Fetch transcript for a video. Returns dict with text, language, source or None if unavailable."""
-    for lang in languages:
-        try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-            full_text = " ".join([entry["text"] for entry in transcript_list])
-            return {
-                "text": full_text,
-                "language": lang,
-                "source": "youtube-transcript-api",
-            }
-        except Exception:
-            continue
-    return None
+    try:
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(video_id, languages=languages)
+        full_text = " ".join([snippet.text for snippet in fetched.snippets])
+        return {
+            "text": full_text,
+            "language": fetched.language_code,
+            "source": "youtube-transcript-api",
+        }
+    except Exception:
+        return None
 
 
 def airtable_find_first(table, formula: str):

@@ -43,8 +43,17 @@ async function extractTranscript() {
       return;
     }
     
-    // Send message to content script
-    const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractTranscript' });
+    // Send message to content script with error handling
+    let response;
+    try {
+      response = await chrome.tabs.sendMessage(tab.id, { action: 'extractTranscript' });
+    } catch (msgError) {
+      // Content script not loaded yet - try to inject it
+      console.log('Content script not ready, reloading page may help');
+      showError('Content script not loaded. Please reload the YouTube page and try again.');
+      extractBtn.disabled = false;
+      return;
+    }
     
     if (response.error) {
       showError(response.error);
@@ -183,7 +192,9 @@ settingsLink.addEventListener('click', (e) => {
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const currentTab = tabs[0];
   if (!currentTab.url?.includes('youtube.com/watch')) {
-    showError('Please navigate to a YouTube video page');
+    showStatus('Navigate to a YouTube video page to extract transcripts', 'info');
     extractBtn.disabled = true;
+  } else {
+    showStatus('Ready! Click "Extract Transcript" to begin', 'info');
   }
 });

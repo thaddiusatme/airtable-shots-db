@@ -1,8 +1,10 @@
 // Popup script - handles UI interactions and saves to Airtable
 
 let currentTranscriptData = null;
+let isCapturing = false;
+let captureFolder = '';
 
-// DOM elements
+// DOM elements — Transcript
 const statusMessage = document.getElementById('statusMessage');
 const videoInfo = document.getElementById('videoInfo');
 const videoTitle = document.getElementById('videoTitle');
@@ -11,6 +13,17 @@ const transcriptPreview = document.getElementById('transcriptPreview');
 const extractBtn = document.getElementById('extractBtn');
 const saveBtn = document.getElementById('saveBtn');
 const settingsLink = document.getElementById('settingsLink');
+
+// DOM elements — Capture
+const captureIntervalInput = document.getElementById('captureInterval');
+const captureMaxInput = document.getElementById('captureMax');
+const captureStatusDiv = document.getElementById('captureStatus');
+const captureCountSpan = document.getElementById('captureCount');
+const captureTotalSpan = document.getElementById('captureTotal');
+const startCaptureBtn = document.getElementById('startCaptureBtn');
+const stopCaptureBtn = document.getElementById('stopCaptureBtn');
+const openFolderLinkDiv = document.getElementById('openFolderLink');
+const openFolderAnchor = document.getElementById('openFolder');
 
 // Show status message
 function showStatus(message, type = 'info') {
@@ -276,12 +289,120 @@ function openSettings() {
   chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
 }
 
+// --- Capture Orchestration ---
+
+async function startCapture() {
+  const interval = parseFloat(captureIntervalInput.value) || 1;
+  const maxFrames = parseInt(captureMaxInput.value) || 100;
+
+  if (interval < 0.5) {
+    showError('Minimum interval is 0.5 seconds');
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab.url?.includes('youtube.com/watch')) {
+    showError('Navigate to a YouTube video page first');
+    return;
+  }
+
+  isCapturing = true;
+  captureCountSpan.textContent = '0';
+  captureTotalSpan.textContent = String(maxFrames);
+  captureStatusDiv.classList.remove('hidden');
+  startCaptureBtn.classList.add('hidden');
+  stopCaptureBtn.classList.remove('hidden');
+  openFolderLinkDiv.classList.add('hidden');
+  captureIntervalInput.disabled = true;
+  captureMaxInput.disabled = true;
+
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      action: 'startCapture',
+      options: { interval, maxFrames }
+    });
+  } catch (err) {
+    showError('Content script not loaded. Reload the YouTube page and try again.');
+    resetCaptureUI();
+  }
+}
+
+async function stopCapture() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  try {
+    await chrome.tabs.sendMessage(tab.id, { action: 'stopCapture' });
+  } catch (err) {
+    console.error('Stop capture error:', err);
+  }
+  resetCaptureUI();
+}
+
+function resetCaptureUI() {
+  isCapturing = false;
+  startCaptureBtn.classList.remove('hidden');
+  stopCaptureBtn.classList.add('hidden');
+  captureIntervalInput.disabled = false;
+  captureMaxInput.disabled = false;
+}
+
+// Listen for messages from content script (frame data, status updates)
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'frameReady') {
+    // Download the frame PNG
+    chrome.downloads.download({
+      url: message.dataUrl,
+      filename: `${message.folder}/${message.filename}`,
+      saveAs: false,
+      conflictAction: 'uniquify'
+    });
+    captureCountSpan.textContent = String(message.index + 1);
+  }
+
+  if (message.type === 'manifestReady') {
+    // Download manifest.json
+    chrome.downloads.download({
+      url: message.dataUrl,
+      filename: `${message.folder}/${message.filename}`,
+      saveAs: false,
+      conflictAction: 'uniquify'
+    });
+    captureFolder = message.folder;
+  }
+
+  if (message.type === 'captureStarted') {
+    captureFolder = message.folder;
+    console.log('[Popup] Capture started, folder:', captureFolder);
+  }
+
+  if (message.type === 'captureStopped') {
+    const count = message.count || 0;
+    captureCountSpan.textContent = String(count);
+    showSuccess(`✓ Captured ${count} frames`);
+    resetCaptureUI();
+    if (captureFolder) {
+      openFolderLinkDiv.classList.remove('hidden');
+    }
+  }
+
+  if (message.type === 'captureError') {
+    showError(message.error);
+    resetCaptureUI();
+  }
+});
+
 // Event listeners
 extractBtn.addEventListener('click', extractTranscript);
 saveBtn.addEventListener('click', saveToAirtable);
 settingsLink.addEventListener('click', (e) => {
   e.preventDefault();
   openSettings();
+});
+startCaptureBtn.addEventListener('click', startCapture);
+stopCaptureBtn.addEventListener('click', stopCapture);
+openFolderAnchor.addEventListener('click', (e) => {
+  e.preventDefault();
+  // Open the Downloads folder — chrome.downloads.showDefaultFolder() opens the default download location
+  chrome.downloads.showDefaultFolder();
 });
 
 // Initialize - check if on YouTube video page
@@ -290,7 +411,9 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   if (!currentTab.url?.includes('youtube.com/watch')) {
     showStatus('Navigate to a YouTube video page to extract transcripts', 'info');
     extractBtn.disabled = true;
+    startCaptureBtn.disabled = true;
   } else {
     showStatus('Ready! Click "Extract Transcript" to begin', 'info');
+    startCaptureBtn.disabled = false;
   }
 });

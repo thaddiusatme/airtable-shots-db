@@ -104,6 +104,75 @@
     .hidden {
       display: none;
     }
+    
+    /* Capture Shots section */
+    .section-divider {
+      border: none;
+      border-top: 1px solid #e0e0e0;
+      margin: 16px 0;
+    }
+    
+    h2 {
+      font-size: 14px;
+      margin: 0 0 10px 0;
+      color: #333;
+    }
+    
+    .capture-controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    
+    .capture-controls label {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      font-size: 12px;
+      color: #555;
+    }
+    
+    .capture-controls input {
+      margin-top: 4px;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    
+    .capture-status {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    
+    .capture-status strong {
+      color: #333;
+    }
+    
+    button.stop {
+      background: #d32f2f;
+    }
+    
+    button.stop:hover {
+      background: #b71c1c;
+    }
+    
+    .open-folder-link {
+      text-align: center;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    
+    .open-folder-link a {
+      color: #1976d2;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    
+    .open-folder-link a:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -124,6 +193,32 @@
   
   <button id="extractBtn">Extract Transcript</button>
   <button id="saveBtn" class="hidden" disabled>Save to Airtable</button>
+  
+  <!-- Capture Shots Section -->
+  <hr class="section-divider">
+  <h2>📸 Capture Shots</h2>
+  
+  <div class="capture-controls">
+    <label>
+      Interval (sec)
+      <input type="number" id="captureInterval" value="1" min="0.5" step="0.5">
+    </label>
+    <label>
+      Max frames
+      <input type="number" id="captureMax" value="100" min="1" step="1">
+    </label>
+  </div>
+  
+  <div id="captureStatus" class="capture-status hidden">
+    <strong>Captured:</strong> <span id="captureCount">0</span> / <span id="captureTotal">100</span>
+  </div>
+  
+  <button id="startCaptureBtn" disabled>Start Capture</button>
+  <button id="stopCaptureBtn" class="stop hidden">Stop Capture</button>
+  
+  <div id="openFolderLink" class="open-folder-link hidden">
+    <a id="openFolder" href="#">📂 Open captures folder</a>
+  </div>
   
   <div class="settings-link">
     <a href="#" id="settingsLink">⚙️ Settings</a>

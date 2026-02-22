@@ -201,6 +201,140 @@ async function extractTranscript() {
   }
 }
 
+// --- Frame Capture Logic ---
+
+let captureTimer = null;
+let captureIndex = 0;
+let captureMax = 100;
+let captureInterval = 1000; // ms
+let captureFolder = '';
+
+function getVideoElement() {
+  return document.querySelector('video.html5-main-video') || document.querySelector('video');
+}
+
+function getVideoId() {
+  const urlParams = new URLSearchParams(window.location.search);
+  return urlParams.get('v') || 'unknown';
+}
+
+function getVideoTitleText() {
+  return document.querySelector('h1.ytd-video-primary-info-renderer yt-formatted-string')?.textContent?.trim() ||
+         document.querySelector('h1.title')?.textContent?.trim() ||
+         document.querySelector('yt-formatted-string.style-scope.ytd-watch-metadata')?.textContent?.trim() ||
+         'Unknown Title';
+}
+
+function formatTimestamp(seconds) {
+  return seconds.toFixed(3).padStart(7, '0');
+}
+
+function formatIndex(index) {
+  return String(index).padStart(5, '0');
+}
+
+function captureFrame(video) {
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/png');
+  });
+}
+
+function buildManifest(frameList) {
+  return {
+    videoId: getVideoId(),
+    videoTitle: getVideoTitleText(),
+    captureDate: new Date().toISOString(),
+    interval: captureInterval / 1000,
+    frames: frameList
+  };
+}
+
+async function startCapture(options) {
+  const video = getVideoElement();
+  if (!video) {
+    chrome.runtime.sendMessage({ type: 'captureError', error: 'No <video> element found on page' });
+    return;
+  }
+
+  captureIndex = 0;
+  captureMax = options.maxFrames || 100;
+  captureInterval = (options.interval || 1) * 1000;
+  const now = new Date();
+  const datetime = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  captureFolder = `yt-captures/${getVideoId()}_${datetime}`;
+  const frameList = [];
+
+  console.log(`[Capture] Starting: interval=${captureInterval}ms, max=${captureMax}, folder=${captureFolder}`);
+
+  captureTimer = setInterval(async () => {
+    if (captureIndex >= captureMax) {
+      stopCapture(frameList);
+      return;
+    }
+
+    try {
+      const timestamp = video.currentTime;
+      const blob = await captureFrame(video);
+      const filename = `frame_${formatIndex(captureIndex)}_t${formatTimestamp(timestamp)}s.png`;
+
+      frameList.push({ index: captureIndex, timestamp, filename });
+
+      // Convert blob to base64 data URL for download via popup
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        chrome.runtime.sendMessage({
+          type: 'frameReady',
+          dataUrl: reader.result,
+          filename,
+          folder: captureFolder,
+          index: captureIndex,
+          timestamp,
+          total: captureMax
+        });
+      };
+      reader.readAsDataURL(blob);
+
+      captureIndex++;
+    } catch (err) {
+      console.error('[Capture] Frame error:', err);
+    }
+  }, captureInterval);
+
+  chrome.runtime.sendMessage({ type: 'captureStarted', folder: captureFolder });
+}
+
+function stopCapture(frameList) {
+  if (captureTimer) {
+    clearInterval(captureTimer);
+    captureTimer = null;
+  }
+
+  // Generate manifest.json
+  if (frameList && frameList.length > 0) {
+    const manifest = buildManifest(frameList);
+    const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' });
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      chrome.runtime.sendMessage({
+        type: 'manifestReady',
+        dataUrl: reader.result,
+        filename: 'manifest.json',
+        folder: captureFolder,
+        manifest
+      });
+    };
+    reader.readAsDataURL(manifestBlob);
+  }
+
+  chrome.runtime.sendMessage({ type: 'captureStopped', count: captureIndex, folder: captureFolder });
+  console.log(`[Capture] Stopped at frame ${captureIndex}`);
+}
+
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'extractTranscript') {
@@ -212,6 +346,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true; // Keep message channel open for async response
   }
+
+  if (request.action === 'startCapture') {
+    startCapture(request.options || {});
+    sendResponse({ status: 'started' });
+    return true;
+  }
+
+  if (request.action === 'stopCapture') {
+    stopCapture(null);
+    sendResponse({ status: 'stopped' });
+    return true;
+  }
+
   return true;
 });
 

@@ -5,7 +5,8 @@
   "description": "Extract YouTube transcripts and save them to Airtable",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "downloads"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",

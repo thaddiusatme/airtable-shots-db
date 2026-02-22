@@ -130,38 +130,59 @@ async function saveToAirtable() {
     
     const findResult = await findResponse.json();
     
+    let saveResponse;
+    
     if (findResult.records.length === 0) {
-      showError('Video not found in Airtable. Please import the video first using the CLI.');
-      saveBtn.disabled = false;
-      return;
+      // Video not in Airtable yet — create a new record
+      const createUrl = `https://api.airtable.com/v0/${airtableBaseId}/Videos`;
+      
+      saveResponse = await fetch(createUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${airtableApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          fields: {
+            'Video Title': currentTranscriptData.videoTitle,
+            'Video ID': currentTranscriptData.videoId,
+            'Platform': 'YouTube',
+            'Video URL': `https://www.youtube.com/watch?v=${currentTranscriptData.videoId}`,
+            'Triage Status': 'Queued',
+            'Transcript (Full)': currentTranscriptData.transcript,
+            'Transcript Language': currentTranscriptData.language,
+            'Transcript Source': currentTranscriptData.source
+          }
+        })
+      });
+    } else {
+      // Video exists — update with transcript
+      const recordId = findResult.records[0].id;
+      const updateUrl = `https://api.airtable.com/v0/${airtableBaseId}/Videos/${recordId}`;
+      
+      saveResponse = await fetch(updateUrl, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${airtableApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          fields: {
+            'Transcript (Full)': currentTranscriptData.transcript,
+            'Transcript Language': currentTranscriptData.language,
+            'Transcript Source': currentTranscriptData.source
+          }
+        })
+      });
     }
     
-    const recordId = findResult.records[0].id;
-    
-    // Update record with transcript
-    const updateUrl = `https://api.airtable.com/v0/${airtableBaseId}/Videos/${recordId}`;
-    
-    const updateResponse = await fetch(updateUrl, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${airtableApiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        fields: {
-          'Transcript (Full)': currentTranscriptData.transcript,
-          'Transcript Language': currentTranscriptData.language,
-          'Transcript Source': currentTranscriptData.source
-        }
-      })
-    });
-    
-    if (!updateResponse.ok) {
-      const error = await updateResponse.json();
-      throw new Error(error.error?.message || 'Failed to update Airtable');
+    if (!saveResponse.ok) {
+      const error = await saveResponse.json();
+      throw new Error(error.error?.message || 'Failed to save to Airtable');
     }
     
-    showSuccess('✓ Transcript saved to Airtable successfully!');
+    const action = findResult.records.length === 0 ? 'created + saved' : 'saved';
+    showSuccess(`✓ Transcript ${action} to Airtable successfully!`);
     
     // Keep button disabled to prevent duplicate saves
     saveBtn.textContent = 'Saved ✓';

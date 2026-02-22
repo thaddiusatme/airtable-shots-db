@@ -197,3 +197,97 @@ GitHub Issue #7 — Add proper Settings page for Chrome extension
 - Load extension in Chrome and run manual test checklist
 - Close GitHub Issue #7 after verification
 - Begin Issue #8: Full transcript extraction improvements
+
+---
+
+## Iteration 3: Auto-Create Records, Thumbnails, and Channel Linking
+
+### Date
+2026-02-21
+
+### Branch
+`chrome-extension-settings-page`
+
+### Issues
+- GitHub Issue #9 — Transcript Source select field bug (resolved via manual Airtable fix)
+- GitHub Issue #10 — Grab thumbnail when creating video record
+- GitHub Issue #11 — Link Channel record when creating video
+
+### Commits
+- `c63f2aa` — Auto-create Airtable record when video not found
+- `8942c18` — Add thumbnail + channel linking when creating video from extension
+
+---
+
+## What We Learned
+
+### 1. Airtable Single Select Fields Reject Unknown Options via API
+**Issue:** Sending `"youtube-web-ui-dom"` to a Single Select field that only had `"youtube-transcript-api"` as an option.
+
+**Error:** `Insufficient permissions to create new select option "youtube-web-ui-dom"`
+
+**Lesson:** The Airtable API cannot create new Single Select options unless the token has `schema.bases:write` scope. When adding new sources of data (e.g., Chrome extension vs CLI), either pre-populate the select options in the Airtable UI or use a text field instead.
+
+---
+
+### 2. YouTube Thumbnail URLs Are Predictable
+**Approach:** Instead of scraping the thumbnail from the DOM, used the standard YouTube thumbnail URL pattern:
+```
+https://i.ytimg.com/vi/{videoId}/hqdefault.jpg
+```
+
+**Lesson:** YouTube thumbnails follow a deterministic URL pattern. No DOM scraping needed — just construct the URL from the video ID. `hqdefault.jpg` (480x360) is a reliable default; `maxresdefault.jpg` exists for most but not all videos.
+
+---
+
+### 3. Channel Extraction from YouTube DOM Requires Multiple Selectors
+**Implementation:** Three fallback strategies for finding the channel link element:
+1. `ytd-video-owner-renderer ytd-channel-name a`
+2. `#owner a[href*="/channel/"]`
+3. `#owner a[href*="/@"]`
+
+**Lesson:** YouTube uses both `/channel/UCxxxxxx` and `/@handle` URL formats. The DOM extraction must handle both. Channel IDs starting with `UC` are the canonical identifier, but many channels now primarily use `@handle` URLs.
+
+---
+
+### 4. Non-Blocking Channel Upsert is the Right Pattern
+**Decision:** Channel upsert returns `null` on failure instead of throwing, and the video record saves without the channel link.
+
+**Lesson:** When a secondary operation (channel linking) could fail for various reasons (network, permissions, missing data), make it non-blocking. The primary operation (saving the transcript) should always succeed. Users can manually link channels later if needed.
+
+---
+
+### 5. Extension Can Replace CLI for Record Creation
+**Discovery:** Originally, the extension only updated existing records (requiring CLI import first). Adding auto-create capability eliminated a major friction point for non-technical users.
+
+**Lesson:** Every workflow step that requires switching tools (extension → CLI → extension) is a drop-off point. The extension should be self-sufficient for the most common use case: "I'm watching a video and want to save its transcript."
+
+---
+
+### 6. GitHub Issues as Lightweight Bug Tracking Works Well
+**Approach:** Created focused issues (#9, #10, #11) for each bug/feature discovered during testing, with root cause analysis and solution options documented in the issue body.
+
+**Lesson:** Filing an issue before fixing a bug creates a paper trail and forces clear problem articulation. Even when the fix is quick, the issue documents the "why" for future reference.
+
+---
+
+## What Went Well
+- Rapid iteration: bug discovered → issue filed → fix shipped in minutes
+- Auto-create eliminated the biggest UX friction (CLI dependency)
+- Thumbnail + channel linking achieved feature parity with CLI import
+- Non-blocking pattern prevented cascading failures
+
+---
+
+## What Could Be Improved (Future)
+- Add `schema.bases:write` to API token to avoid Single Select issues
+- Handle `@handle` → canonical `UCxxxxxx` channel ID resolution
+- Consider batch upsert for multiple videos
+- Full transcript extraction still incomplete (Issue #8)
+
+---
+
+## Next Steps
+- Issue #8: Fix partial transcript extraction
+- Create extension icons for polished look
+- Consider merging `chrome-extension-settings-page` → `feature/youtube-transcripts` → `main`

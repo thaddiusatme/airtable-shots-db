@@ -80,3 +80,37 @@ Lint: ✅ No errors
 - ✅ Higher likelihood of working in production
 - ❌ Adds complexity and setup burden
 - ❌ Delays feature availability
+
+---
+
+## Feature Update: Screenshot Capture (Phase 1 of Shot List Pipeline)
+
+**Date:** 2026-02-22
+**Branch:** `feature/screenshot-capture` (based on `feature/youtube-transcripts`)
+**Commit:** `51919ec`
+
+### ✅ What Was Implemented
+
+Added "Capture Shots" feature to the Chrome extension — captures timestamped PNG frames from YouTube videos and saves them to the Downloads folder with a manifest.json.
+
+**Files modified:**
+
+- `manifest.json` — added `downloads` permission
+- `popup.html` — added "Capture Shots" UI section (interval input, max frames, start/stop, status counter)
+- `popup.js` — capture orchestration via `chrome.downloads.download()` + message listener
+- `content.js` — frame capture logic (`canvas.drawImage(video)` → `toBlob()` → base64 data URL)
+
+### ✅ Manual Test Results
+
+- Frames saved to `~/Downloads/yt-captures/{videoId}_{datetime}/` ✅
+- manifest.json generated with correct metadata ✅
+- Existing transcript extraction unaffected ✅
+
+### 📋 Next Steps
+
+- [ ] **Phase 2**: Scene Analyzer (Python, OpenCV histogram + Ollama VLM)
+- [ ] **Phase 3**: Airtable Publisher (create Shot records from analysis.json)
+- [ ] **Phase 4**: yt-frame-poc CLI alignment
+- [ ] **Phase 5**: Cloud storage for Shot Image attachments
+
+See `ISSUE_SHOT_LIST_PIPELINE.md` for full pipeline spec.

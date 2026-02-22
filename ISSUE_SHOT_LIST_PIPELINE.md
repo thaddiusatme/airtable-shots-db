@@ -38,31 +38,41 @@ CAPTURE                      ANALYZE                       PUBLISH
                                   deleted after
 ```
 
-## Phase 1: Chrome Extension — Screenshot Capture
+## Phase 1: Chrome Extension — Screenshot Capture ✅
+
+> **Status**: Implemented on branch `feature/screenshot-capture` (commit `51919ec`, 2026-02-22)
+> **Manually tested**: Frames saved to Downloads folder successfully.
 
 ### Changes to existing files
 
-**manifest.json**
-- Add `downloads` permission for saving PNGs locally
+**manifest.json** ✅
+- Added `downloads` permission for saving PNGs locally
 
-**popup.html**
-- Add "Capture Shots" section below transcript section
+**popup.html** ✅
+- Added "Capture Shots" section below transcript section
 - Interval input (default: 1 sec, min 0.5)
-- Max screenshots input (optional)
+- Max screenshots input (default: 100)
 - Start / Stop Capture button
 - Status display: `Captured: 0 / 100`
 - "Open captures folder" link after capture completes
 
-**popup.js**
-- Send `startCapture` / `stopCapture` messages to content script
-- Track progress via messages from content script
-- Handle download completion
+**popup.js** ✅
+- Sends `startCapture` / `stopCapture` messages to content script
+- Tracks progress via `chrome.runtime.onMessage` listener
+- Downloads frames via `chrome.downloads.download()` API
+- UI state management (disable inputs during capture, show/hide buttons)
 
-**content.js**
-- On `startCapture`: find `<video>`, start timer
-- Each tick: `canvas.drawImage(video)` → `canvas.toBlob()` → send to popup for download
-- On `stopCapture` or max reached: stop timer, generate manifest.json, download it
+**content.js** ✅
+- On `startCapture`: finds `<video>` element, starts interval timer
+- Each tick: `canvas.drawImage(video)` → `canvas.toBlob()` → base64 data URL → sends to popup for download
+- On `stopCapture` or max reached: stops timer, generates manifest.json, downloads it
 - Filename format: `frame_{index}_t{timestamp}s.png`
+
+### Implementation notes
+
+- Used base64 data URLs to bridge content script → popup (content scripts can't call `chrome.downloads` directly)
+- Reused existing message-passing pattern (`chrome.tabs.sendMessage` / `chrome.runtime.onMessage`)
+- Transcript extraction left completely untouched — capture is a separate code path
 
 ### Output format
 
@@ -161,7 +171,7 @@ New module in `airtable-shots-db/publisher/`:
 
 ## Acceptance Criteria
 
-- [ ] Phase 1: Chrome extension captures frames at configurable interval, generates manifest.json, downloads to local folder
+- [x] Phase 1: Chrome extension captures frames at configurable interval, generates manifest.json, downloads to local folder
 - [ ] Phase 2: Analyzer detects scene boundaries via OpenCV, generates analysis.json with VLM descriptions
 - [ ] Phase 3: Publisher reads analysis.json, creates Shot records in Airtable with linked Video
 - [ ] End-to-end test: capture → analyze → publish workflow produces curated shot list in Airtable

@@ -2,16 +2,17 @@
 
 ## Summary
 
-Add shot frame images to Airtable Shot records by uploading boundary frame PNGs to Cloudflare R2 and writing the public URLs to a new `Shot Image` attachment field.
+Add shot frame images to Airtable Shot records by uploading boundary frame PNGs to Cloudflare R2 and writing the public URLs to the `Scene Start` and `Scene End` attachment fields.
 
-Currently, the publisher creates Shot records with metadata (labels, timestamps, AI descriptions) but no images. Viewing the shot list in Airtable requires cross-referencing frame filenames on disk — the shot list should be self-contained with visible thumbnails.
+Currently, the publisher creates 1 Shot record per scene with metadata (labels, timestamps, AI descriptions) but no images. Viewing the shot list in Airtable requires cross-referencing frame filenames on disk — the shot list should be self-contained with visible thumbnails.
 
 ## Context
 
-- **Publisher** (`publisher/publish.py`) creates 2 Shot records per scene (Start + End) from `analysis.json`
+- **Publisher** (`publisher/publish.py`) creates 1 Shot record per scene from `analysis.json`
+- Each scene has `firstFrame` and `lastFrame` filenames in `analysis.json`
+- **Shots table** already has two attachment fields: `Scene Start` and `Scene End` (`multipleAttachments`)
+- **Airtable attachment fields** require publicly accessible URLs — Airtable downloads and stores its own copy
 - **Frame PNGs** exist on disk in the capture directory (e.g., `frame_00000_t000.000s.png`)
-- **Airtable attachment fields** (`multipleAttachments`) require publicly accessible URLs — Airtable downloads and stores its own copy
-- **Shots table** currently has no attachment field — need to add `Shot Image` in Airtable
 
 ## Why Cloudflare R2
 
@@ -37,7 +38,7 @@ Currently, the publisher creates Shot records with metadata (labels, timestamps,
 - [ ] Cloudflare account with R2 enabled
 - [ ] R2 bucket created (e.g., `yt-shots`)
 - [ ] R2 API token with read/write access (Account ID, Access Key ID, Secret Access Key)
-- [ ] Add `Shot Image` attachment field to Shots table in Airtable
+- [ ] `Scene Start` and `Scene End` attachment fields already exist in Shots table — no Airtable changes needed
 - [ ] Add `boto3` to `requirements.txt`
 
 ### P0 — Core upload + attach
@@ -52,9 +53,11 @@ Currently, the publisher creates Shot records with metadata (labels, timestamps,
 - Return public URL from R2 custom domain or `r2.dev` subdomain
 
 **Task 2: Integrate into publisher**
-- After `build_shot_records()`, enrich each Shot record with `Shot Image` field
-- `"Shot Image": [{"url": "https://...r2.dev/KGHoVptow30/frame_00000_t000.000s.png"}]`
-- Only upload frames referenced in `analysis.json` (boundary frames), not all captured frames
+- After `build_shot_records()`, enrich each Shot record with two attachment fields:
+  - `"Scene Start": [{"url": "https://...r2.dev/KGHoVptow30/frame_00000_t000.000s.png"}]`
+  - `"Scene End": [{"url": "https://...r2.dev/KGHoVptow30/frame_00020_t020.000s.png"}]`
+- Upload only boundary frames (firstFrame + lastFrame per scene), not all captured frames
+- For a 34-scene video: 68 uploads total (34 start + 34 end), but only 34 Shot records
 - Add `--skip-images` flag to publisher CLI (skip upload for faster testing)
 
 **Task 3: Credential management**

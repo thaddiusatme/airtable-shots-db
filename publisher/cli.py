@@ -93,9 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("  Shots to create: %d", result["shots_to_create"])
         for shot in result["shot_records"]:
             logger.info(
-                "    %s — %s @ %s",
+                "    %s @ %s",
                 shot["Shot Label"],
-                shot["Frame Filename"],
                 shot["Timestamp (hh:mm:ss)"],
             )
     else:

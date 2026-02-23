@@ -185,18 +185,6 @@ class TestBuildVideoFields:
         result = build_video_fields(analysis)
         assert result["Video URL"] == "https://www.youtube.com/watch?v=KGHoVptow30"
 
-    def test_contains_total_scenes(self, analysis: dict):
-        result = build_video_fields(analysis)
-        assert result["Total Scenes"] == 3
-
-    def test_contains_analysis_date(self, analysis: dict):
-        result = build_video_fields(analysis)
-        assert result["Analysis Date"] == "2026-02-23T01:39:22.881311+00:00"
-
-    def test_contains_analysis_model(self, analysis: dict):
-        result = build_video_fields(analysis)
-        assert result["AI Model"] == "llama3.2-vision:latest"
-
     def test_contains_thumbnail_url(self, analysis: dict):
         result = build_video_fields(analysis)
         expected = "https://i.ytimg.com/vi/KGHoVptow30/hqdefault.jpg"
@@ -271,35 +259,42 @@ class TestBuildShotRecords:
         assert result[0]["AI Description (Local)"] == expected
         assert result[1]["AI Description (Local)"] == expected
 
-    def test_ai_status_complete_when_description_present(self, analysis: dict):
+    def test_ai_status_done_when_description_present(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        assert result[0]["AI Status"] == "Complete"
+        assert result[0]["AI Status"] == "Done"
 
-    def test_ai_status_pending_when_description_none(self, analysis: dict):
+    def test_ai_status_queued_when_description_none(self, analysis: dict):
         analysis["scenes"][0]["description"] = None
         result = build_shot_records(analysis, video_record_id="recABC123")
-        assert result[0]["AI Status"] == "Pending"
+        assert result[0]["AI Status"] == "Queued"
 
     def test_ai_model_propagated(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
         assert result[0]["AI Model"] == "llama3.2-vision:latest"
 
-    def test_frame_filename_included(self, analysis: dict):
+    def test_capture_method_set(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        assert result[0]["Frame Filename"] == "frame_00000_t000.000s.png"
-        assert result[1]["Frame Filename"] == "frame_00020_t020.000s.png"
+        assert result[0]["Capture Method"] == "Auto Import"
+
+    def test_source_device_set(self, analysis: dict):
+        result = build_shot_records(analysis, video_record_id="recABC123")
+        assert result[0]["Source Device"] == "Desktop"
 
     def test_empty_scenes_returns_empty_list(self, analysis: dict):
         analysis["scenes"] = []
         result = build_shot_records(analysis, video_record_id="recABC123")
         assert result == []
 
-    def test_scene_index_on_shots(self, analysis: dict):
+    def test_no_unknown_fields(self, analysis: dict):
+        """Shot records should only contain fields that exist in Airtable."""
         result = build_shot_records(analysis, video_record_id="recABC123")
-        assert result[0]["Scene Index"] == 0
-        assert result[1]["Scene Index"] == 0
-        assert result[2]["Scene Index"] == 1
-        assert result[3]["Scene Index"] == 1
+        valid_fields = {
+            "Shot Label", "Video", "Timestamp (sec)", "Timestamp (hh:mm:ss)",
+            "AI Description (Local)", "AI Model", "AI Status",
+            "Capture Method", "Source Device",
+        }
+        for shot in result:
+            assert set(shot.keys()) == valid_fields
 
 
 # ---------------------------------------------------------------------------
@@ -474,17 +469,19 @@ class TestPublishToAirtable:
 
         mock_api.table.side_effect = table_router
 
+        # Video record includes reverse-link "Shots" field with existing shot IDs
         mock_videos_table.all.return_value = [
-            {"id": "recVID1", "fields": {"Video ID": "KGHoVptow30"}}
-        ]
-        # Existing shots linked to this video
-        mock_shots_table.all.return_value = [
-            {"id": "recOLD1"},
-            {"id": "recOLD2"},
+            {
+                "id": "recVID1",
+                "fields": {
+                    "Video ID": "KGHoVptow30",
+                    "Shots": ["recOLD1", "recOLD2"],
+                },
+            }
         ]
         mock_shots_table.batch_create.return_value = []
 
-        publish_to_airtable(str(analysis_dir), api_key="fake_key", base_id="appXYZ")
+        result = publish_to_airtable(str(analysis_dir), api_key="fake_key", base_id="appXYZ")
 
         # Should delete old shots before creating new ones
         mock_shots_table.batch_delete.assert_called_once_with(["recOLD1", "recOLD2"])

@@ -85,9 +85,6 @@ def build_video_fields(analysis: dict[str, Any]) -> dict[str, Any]:
         "Video ID": video_id,
         "Platform": "YouTube",
         "Video URL": f"https://www.youtube.com/watch?v={video_id}",
-        "Total Scenes": analysis["totalScenes"],
-        "Analysis Date": analysis.get("analysisDate", ""),
-        "AI Model": analysis.get("analysisModel", ""),
         "Thumbnail URL": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
     }
 
@@ -113,14 +110,13 @@ def build_shot_records(
     for scene in analysis["scenes"]:
         idx = scene["sceneIndex"]
         description = scene.get("description")
-        ai_status = "Complete" if description else "Pending"
+        ai_status = "Done" if description else "Queued"
 
         # First frame (scene start)
         shots.append(
             {
                 "Shot Label": f"Scene {idx} — Start",
                 "Video": [video_record_id],
-                "Scene Index": idx,
                 "Timestamp (sec)": scene["startTimestamp"],
                 "Timestamp (hh:mm:ss)": format_timestamp_hms(
                     scene["startTimestamp"]
@@ -128,7 +124,8 @@ def build_shot_records(
                 "AI Description (Local)": description,
                 "AI Model": model,
                 "AI Status": ai_status,
-                "Frame Filename": scene["firstFrame"],
+                "Capture Method": "Auto Import",
+                "Source Device": "Desktop",
             }
         )
 
@@ -137,7 +134,6 @@ def build_shot_records(
             {
                 "Shot Label": f"Scene {idx} — End",
                 "Video": [video_record_id],
-                "Scene Index": idx,
                 "Timestamp (sec)": scene["endTimestamp"],
                 "Timestamp (hh:mm:ss)": format_timestamp_hms(
                     scene["endTimestamp"]
@@ -145,7 +141,8 @@ def build_shot_records(
                 "AI Description (Local)": description,
                 "AI Model": model,
                 "AI Status": ai_status,
-                "Frame Filename": scene["lastFrame"],
+                "Capture Method": "Auto Import",
+                "Source Device": "Desktop",
             }
         )
 
@@ -217,14 +214,16 @@ def publish_to_airtable(
             video_record_id = result["id"]
             logger.info("Created new Video record: %s", video_record_id)
 
-        # Delete existing shots for idempotency
-        existing_shots = shots_table.all(
-            formula=f"{{Video}}='{video_record_id}'"
-        )
-        if existing_shots:
-            old_ids = [s["id"] for s in existing_shots]
-            shots_table.batch_delete(old_ids)
-            logger.info("Deleted %d existing Shot records", len(old_ids))
+        # Delete existing shots for idempotency.
+        # Linked record fields can't be queried by record ID in formulas,
+        # so read the reverse-link "Shots" field from the Video record.
+        if existing_videos:
+            existing_shot_ids = existing_videos[0]["fields"].get("Shots", [])
+            if existing_shot_ids:
+                shots_table.batch_delete(existing_shot_ids)
+                logger.info(
+                    "Deleted %d existing Shot records", len(existing_shot_ids)
+                )
 
         # Create new Shot records
         shot_records = build_shot_records(analysis, video_record_id)

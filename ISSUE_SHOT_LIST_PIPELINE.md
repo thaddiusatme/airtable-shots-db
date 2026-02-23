@@ -168,16 +168,16 @@ New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 }
 ```
 
-## Phase 3: Airtable Publisher (Python)
+## Phase 3: Airtable Publisher (Python) — COMPLETE
 
 > **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`88524d7`, 2026-02-22)
 > **Tests**: 114 total passing (49 publisher + 8 CLI + 57 analyzer)
-> **Real-data validated**: KGHoVptow30, 34 scenes → 68 Shot records published to Airtable
+> **Real-data validated**: KGHoVptow30, 34 scenes → 34 Shot records published to Airtable
 >
 > **Lessons learned (TDD)**:
 > - TDD RED→GREEN on publisher was clean: 51 tests written first, all passed on first implementation run — good test design pays off
 > - pyairtable v3.3.0 `Api.table(base_id, table_name)` pattern maps cleanly to mock with `side_effect` table router
-> - 2 Shot records per scene (Start + End frames) matches the "shot list" mental model and stays within budget (~30–80 records per video)
+> - 1 Shot record per scene matches the "shot list" mental model and stays within budget (~30–80 records per video)
 > - `PublisherError` wraps all API exceptions into one type, matching the `OllamaError` pattern from Phase 2
 > - Dry-run mode skips `Api()` instantiation entirely — no credentials needed for preview
 > - Environment variables (`AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`) as fallbacks for CLI flags — follows 12-factor app pattern
@@ -191,15 +191,16 @@ New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 > - Idempotency validated: re-run deleted 136 stale shots and created 68 fresh — no duplicates
 > - pyairtable `batch_create` and `batch_delete` auto-chunk in groups of 10 — no manual batching needed
 
-New module in `airtable-shots-db/publisher/`:
+New modules in `airtable-shots-db/publisher/`:
 - `publisher/publish.py`: Core functions — `load_analysis()`, `build_video_fields()`, `build_shot_records()`, `publish_to_airtable()`
-- `publisher/cli.py`: CLI entry point with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--verbose`
+- `publisher/cli.py`: CLI entry point with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--verbose`
 - `publisher/__main__.py`: Supports `python -m publisher` invocation
 - Reads `analysis.json`
 - Looks up or creates Video record by Video ID
-- Creates Shot records for each scene boundary (first + last frame)
-- Writes fields: Shot Label, Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), AI Status, AI Description (Local), AI Model, Capture Method, Source Device
-- Defers Shot Image attachment to later phase (needs cloud storage URL)
+- Creates **1 Shot record per scene** (refactored from 2 records per scene)
+- Writes fields: Shot Label (S01, S02...), Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), Transcript Start (sec), Transcript End (sec), AI Status, AI Description (Local), AI Model, Capture Method, Source Device, Scene Start (attachment), Scene End (attachment)
+
+**Real-data validated:** KGHoVptow30, 34 scenes → 34 Shot records with R2-hosted thumbnails
 
 ### Airtable budget (Free plan, per video)
 
@@ -209,14 +210,39 @@ New module in `airtable-shots-db/publisher/`:
 | Shot records created | ~30–80 |
 | Monthly API budget used (per video) | ~1% of 1,000 |
 
+## Phase 3.5: R2 Image Attachments — ✅ COMPLETE
+
+Cloudflare R2 integration for Scene Start / Scene End frame thumbnails.
+
+New module:
+- `publisher/r2_uploader.py`: R2Config, create_s3_client(), upload_frame(), upload_scene_frames(), build_attachment_urls()
+- Uses `boto3` S3-compatible API with R2 endpoint
+- Deduplicates shared boundary frames (67 uploads for 34 scenes)
+- Object key format: `{videoId}/{filename}`
+- Public URL: `https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev/{videoId}/{filename}`
+
+Integration:
+- `publish_to_airtable()` accepts optional `r2_config` parameter
+- `build_shot_records()` merges Scene Start/End attachments when available
+- CLI auto-detects R2 env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_URL`
+- `--skip-images` flag for metadata-only publish
+
+**Tests:** 18 r2_uploader tests, 130 total passing (all mocked)
+**Real-data validated:** 67 frames uploaded to R2, 34 Shot records with Scene Start/End thumbnails
+
 ## Phase 4: yt-frame-poc alignment (later)
 
 - Fix `ShotRecord` type + `publishShots()` to match real Airtable schema
 - Ensure CLI output lands in same captures directory the analyzer watches
 
-## Phase 5: Cloud storage for Shot Image attachments (later)
+## Phase 5: Production readiness (later)
 
-- Upload boundary frame PNGs to S3/GCS
+- End-to-end integration test on fresh video
+- Populate Video metadata (Title, Channel, Duration from manifest.json)
+- Error handling & retry logic (Airtable rate limits, R2 failures)
+- Idempotent R2 uploads (HEAD check before upload)
+- R2 cleanup on re-publish (delete old frames)
+- Thumbnail generation (resize to 640px before upload)
 - Write URL to `Shot Image` attachment field in Airtable
 
 ## Acceptance Criteria

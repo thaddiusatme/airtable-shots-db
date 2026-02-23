@@ -92,6 +92,16 @@ CAPTURE                      ANALYZE                       PUBLISH
 
 ## Phase 2: Scene Analyzer (Python)
 
+> **Pass 1 Status**: Implemented on branch `feature/scene-analyzer` (commit `1134cad`, 2026-02-22)
+> **Tests**: 37 passing (29 unit + 8 CLI integration)
+> **Lessons learned**:
+> - TDD RED phase: writing tests first that import from non-existent module confirms the test harness works before any implementation
+> - Boundary semantics require careful index mapping: `distances[i]` is between `frame[i]` and `frame[i+1]`, so a detected boundary at distance index `i` means a new scene starts at frame `i+1`
+> - HSV histogram chi-squared distance on solid-color test frames produces clean 0.0 (identical) vs large positive (different) — good for deterministic test assertions
+> - Filename format string `{i:07.3f}` (not `{i:06.3f}`) matches the real Phase 1 output `t000.000s` — fixture format must match manifest format exactly
+> - `build_analysis()` takes scene-start frame indices (not raw distance indices) — keeps the API clean and delegates the index+1 conversion to the caller (CLI)
+> - Pass 2 VLM is cleanly stubbed: `--skip-vlm` flag, `description: null` / `transition: null` in output — ready for P1 implementation
+
 New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 
 **Pass 1 — OpenCV histogram comparison (~2 seconds for 1800 frames)**

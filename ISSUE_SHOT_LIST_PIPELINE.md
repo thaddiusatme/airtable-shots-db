@@ -170,18 +170,26 @@ New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 
 ## Phase 3: Airtable Publisher (Python)
 
-> **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`37191e0`, 2026-02-22)
-> **Tests**: 59 passing (51 publisher + 8 CLI, all mocked via pyairtable)
+> **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`88524d7`, 2026-02-22)
+> **Tests**: 114 total passing (49 publisher + 8 CLI + 57 analyzer)
+> **Real-data validated**: KGHoVptow30, 34 scenes → 68 Shot records published to Airtable
 >
-> **Lessons learned**:
+> **Lessons learned (TDD)**:
 > - TDD RED→GREEN on publisher was clean: 51 tests written first, all passed on first implementation run — good test design pays off
 > - pyairtable v3.3.0 `Api.table(base_id, table_name)` pattern maps cleanly to mock with `side_effect` table router
 > - 2 Shot records per scene (Start + End frames) matches the "shot list" mental model and stays within budget (~30–80 records per video)
-> - Idempotency via delete-then-create: query existing Shots by Video link, `batch_delete`, then `batch_create` — simpler than upsert logic
 > - `PublisherError` wraps all API exceptions into one type, matching the `OllamaError` pattern from Phase 2
 > - Dry-run mode skips `Api()` instantiation entirely — no credentials needed for preview
 > - Environment variables (`AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`) as fallbacks for CLI flags — follows 12-factor app pattern
 > - Mirroring analyzer's CLI structure (`cli.py` + `__main__.py`) keeps the codebase consistent
+>
+> **Lessons learned (real-data validation)**:
+> - Always query the Airtable metadata API (`/v0/meta/bases/{baseId}/tables`) before assuming field names — test fixtures don't catch schema mismatches
+> - Airtable `singleSelect` fields reject unknown values with 422 — `AI Status` must be exactly `Done`/`Queued`/`Processing`/`Error`, not `Complete`/`Pending`
+> - Linked record fields in Airtable formulas resolve to display values (primary field), NOT record IDs — `{Video}='recXXX'` always returns empty
+> - Fix: read Shot IDs from Video record's reverse-link `Shots` field instead of querying Shots table by formula
+> - Idempotency validated: re-run deleted 136 stale shots and created 68 fresh — no duplicates
+> - pyairtable `batch_create` and `batch_delete` auto-chunk in groups of 10 — no manual batching needed
 
 New module in `airtable-shots-db/publisher/`:
 - `publisher/publish.py`: Core functions — `load_analysis()`, `build_video_fields()`, `build_shot_records()`, `publish_to_airtable()`
@@ -190,7 +198,7 @@ New module in `airtable-shots-db/publisher/`:
 - Reads `analysis.json`
 - Looks up or creates Video record by Video ID
 - Creates Shot records for each scene boundary (first + last frame)
-- Writes fields: Shot Label, Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), AI Status, AI Description (Local), AI Model, Scene Index, Frame Filename
+- Writes fields: Shot Label, Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), AI Status, AI Description (Local), AI Model, Capture Method, Source Device
 - Defers Shot Image attachment to later phase (needs cloud storage URL)
 
 ### Airtable budget (Free plan, per video)

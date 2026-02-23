@@ -94,8 +94,8 @@ def build_shot_records(
 ) -> list[dict[str, Any]]:
     """Build list of Shot record field dicts from analysis.
 
-    Each scene produces 2 Shot records: one for the first frame (start)
-    and one for the last frame (end).
+    Each scene produces 1 Shot record. Scene Start / Scene End images
+    are deferred to the R2 image attachment phase.
 
     Args:
         analysis: Parsed analysis dict.
@@ -112,32 +112,16 @@ def build_shot_records(
         description = scene.get("description")
         ai_status = "Done" if description else "Queued"
 
-        # First frame (scene start)
         shots.append(
             {
-                "Shot Label": f"Scene {idx} — Start",
+                "Shot Label": f"S{idx + 1:02d}",
                 "Video": [video_record_id],
                 "Timestamp (sec)": scene["startTimestamp"],
                 "Timestamp (hh:mm:ss)": format_timestamp_hms(
                     scene["startTimestamp"]
                 ),
-                "AI Description (Local)": description,
-                "AI Model": model,
-                "AI Status": ai_status,
-                "Capture Method": "Auto Import",
-                "Source Device": "Desktop",
-            }
-        )
-
-        # Last frame (scene end)
-        shots.append(
-            {
-                "Shot Label": f"Scene {idx} — End",
-                "Video": [video_record_id],
-                "Timestamp (sec)": scene["endTimestamp"],
-                "Timestamp (hh:mm:ss)": format_timestamp_hms(
-                    scene["endTimestamp"]
-                ),
+                "Transcript Start (sec)": scene["startTimestamp"],
+                "Transcript End (sec)": scene["endTimestamp"],
                 "AI Description (Local)": description,
                 "AI Model": model,
                 "AI Status": ai_status,
@@ -158,7 +142,7 @@ def publish_to_airtable(
     """Publish analysis results to Airtable.
 
     Reads analysis.json, upserts a Video record, and creates Shot records
-    for each scene (2 per scene: first frame + last frame).
+    (one per scene).
 
     Idempotent: re-running deletes existing Shot records for the video
     before creating new ones.

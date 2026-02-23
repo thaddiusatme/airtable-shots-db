@@ -201,10 +201,10 @@ class TestBuildShotRecords:
         result = build_shot_records(analysis, video_record_id="recABC123")
         assert isinstance(result, list)
 
-    def test_two_shots_per_scene(self, analysis: dict):
-        """Each scene produces 2 shots: first frame + last frame."""
+    def test_one_record_per_scene(self, analysis: dict):
+        """Each scene produces 1 Shot record."""
         result = build_shot_records(analysis, video_record_id="recABC123")
-        assert len(result) == 6  # 3 scenes × 2 shots each
+        assert len(result) == 3  # 3 scenes × 1 record each
 
     def test_shot_has_required_fields(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
@@ -222,42 +222,30 @@ class TestBuildShotRecords:
         for shot in result:
             assert shot["Video"] == ["recABC123"]
 
-    def test_first_frame_shot_label(self, analysis: dict):
+    def test_shot_label_format(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        # First shot of scene 0 should indicate it's the start
-        assert "Scene 0" in result[0]["Shot Label"]
-        assert "Start" in result[0]["Shot Label"]
+        assert result[0]["Shot Label"] == "S01"
+        assert result[1]["Shot Label"] == "S02"
+        assert result[2]["Shot Label"] == "S03"
 
-    def test_last_frame_shot_label(self, analysis: dict):
+    def test_timestamp_uses_scene_start(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        # Second shot of scene 0 should indicate it's the end
-        assert "Scene 0" in result[1]["Shot Label"]
-        assert "End" in result[1]["Shot Label"]
-
-    def test_first_frame_timestamp(self, analysis: dict):
-        result = build_shot_records(analysis, video_record_id="recABC123")
-        # Scene 0 start frame: timestamp 0.0
         assert result[0]["Timestamp (sec)"] == 0.0
         assert result[0]["Timestamp (hh:mm:ss)"] == "0:00:00"
+        assert result[1]["Timestamp (sec)"] == 21.0
+        assert result[1]["Timestamp (hh:mm:ss)"] == "0:00:21"
 
-    def test_last_frame_timestamp(self, analysis: dict):
+    def test_transcript_start_end(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        # Scene 0 end frame: timestamp 20.0
-        assert result[1]["Timestamp (sec)"] == 20.0
-        assert result[1]["Timestamp (hh:mm:ss)"] == "0:00:20"
-
-    def test_scene_1_timestamps(self, analysis: dict):
-        result = build_shot_records(analysis, video_record_id="recABC123")
-        # Scene 1 start: index 2 (0-indexed pairs: [0,1]=scene0, [2,3]=scene1)
-        assert result[2]["Timestamp (sec)"] == 21.0
-        assert result[3]["Timestamp (sec)"] == 77.0
+        assert result[0]["Transcript Start (sec)"] == 0.0
+        assert result[0]["Transcript End (sec)"] == 20.0
+        assert result[1]["Transcript Start (sec)"] == 21.0
+        assert result[1]["Transcript End (sec)"] == 77.0
 
     def test_description_propagated(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
-        # Both start and end shots of a scene share the same description
         expected = "A man sitting in front of a microphone with headphones"
         assert result[0]["AI Description (Local)"] == expected
-        assert result[1]["AI Description (Local)"] == expected
 
     def test_ai_status_done_when_description_present(self, analysis: dict):
         result = build_shot_records(analysis, video_record_id="recABC123")
@@ -290,6 +278,7 @@ class TestBuildShotRecords:
         result = build_shot_records(analysis, video_record_id="recABC123")
         valid_fields = {
             "Shot Label", "Video", "Timestamp (sec)", "Timestamp (hh:mm:ss)",
+            "Transcript Start (sec)", "Transcript End (sec)",
             "AI Description (Local)", "AI Model", "AI Status",
             "Capture Method", "Source Device",
         }
@@ -387,8 +376,8 @@ class TestPublishToAirtable:
 
         mock_shots_table.batch_create.assert_called_once()
         shot_records = mock_shots_table.batch_create.call_args[0][0]
-        # 3 scenes × 2 shots each = 6
-        assert len(shot_records) == 6
+        # 3 scenes × 1 record each = 3
+        assert len(shot_records) == 3
 
     @patch("publisher.publish.Api")
     def test_returns_summary_dict(self, mock_api_cls, analysis_dir: Path):
@@ -411,7 +400,7 @@ class TestPublishToAirtable:
             {"id": "recVID1", "fields": {"Video ID": "KGHoVptow30"}}
         ]
         mock_shots_table.batch_create.return_value = [
-            {"id": f"recSHOT{i}"} for i in range(6)
+            {"id": f"recSHOT{i}"} for i in range(3)
         ]
 
         result = publish_to_airtable(
@@ -420,7 +409,7 @@ class TestPublishToAirtable:
 
         assert isinstance(result, dict)
         assert result["video_record_id"] == "recVID1"
-        assert result["shots_created"] == 6
+        assert result["shots_created"] == 3
         assert result["video_id"] == "KGHoVptow30"
 
     @patch("publisher.publish.Api")
@@ -515,7 +504,7 @@ class TestDryRun:
         assert isinstance(result, dict)
         assert result["dry_run"] is True
         assert result["video_id"] == "KGHoVptow30"
-        assert result["shots_to_create"] == 6
+        assert result["shots_to_create"] == 3
         assert "video_fields" in result
         assert "shot_records" in result
 

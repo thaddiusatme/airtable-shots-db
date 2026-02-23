@@ -170,11 +170,27 @@ New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 
 ## Phase 3: Airtable Publisher (Python)
 
+> **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`37191e0`, 2026-02-22)
+> **Tests**: 59 passing (51 publisher + 8 CLI, all mocked via pyairtable)
+>
+> **Lessons learned**:
+> - TDD RED→GREEN on publisher was clean: 51 tests written first, all passed on first implementation run — good test design pays off
+> - pyairtable v3.3.0 `Api.table(base_id, table_name)` pattern maps cleanly to mock with `side_effect` table router
+> - 2 Shot records per scene (Start + End frames) matches the "shot list" mental model and stays within budget (~30–80 records per video)
+> - Idempotency via delete-then-create: query existing Shots by Video link, `batch_delete`, then `batch_create` — simpler than upsert logic
+> - `PublisherError` wraps all API exceptions into one type, matching the `OllamaError` pattern from Phase 2
+> - Dry-run mode skips `Api()` instantiation entirely — no credentials needed for preview
+> - Environment variables (`AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`) as fallbacks for CLI flags — follows 12-factor app pattern
+> - Mirroring analyzer's CLI structure (`cli.py` + `__main__.py`) keeps the codebase consistent
+
 New module in `airtable-shots-db/publisher/`:
+- `publisher/publish.py`: Core functions — `load_analysis()`, `build_video_fields()`, `build_shot_records()`, `publish_to_airtable()`
+- `publisher/cli.py`: CLI entry point with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--verbose`
+- `publisher/__main__.py`: Supports `python -m publisher` invocation
 - Reads `analysis.json`
 - Looks up or creates Video record by Video ID
 - Creates Shot records for each scene boundary (first + last frame)
-- Writes fields: Shot Label, Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), AI Status, AI Description (Local), AI Model, Captured At
+- Writes fields: Shot Label, Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), AI Status, AI Description (Local), AI Model, Scene Index, Frame Filename
 - Defers Shot Image attachment to later phase (needs cloud storage URL)
 
 ### Airtable budget (Free plan, per video)

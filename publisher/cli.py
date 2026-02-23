@@ -8,6 +8,11 @@ Usage:
 Environment variables (alternative to flags):
     AIRTABLE_API_KEY — Airtable personal access token
     AIRTABLE_BASE_ID — Airtable base ID
+    R2_ACCOUNT_ID — Cloudflare R2 account ID
+    R2_ACCESS_KEY_ID — R2 API access key ID
+    R2_SECRET_ACCESS_KEY — R2 API secret access key
+    R2_BUCKET_NAME — R2 bucket name (default: shot-image)
+    R2_PUBLIC_URL — R2 public URL (e.g., https://pub-xxx.r2.dev)
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import os
 import sys
 
 from publisher.publish import PublisherError, publish_to_airtable
+from publisher.r2_uploader import R2Config
 
 logger = logging.getLogger("publisher")
 
@@ -60,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Preview what would be published without writing to Airtable.",
     )
     parser.add_argument(
+        "--skip-images",
+        action="store_true",
+        default=False,
+        help="Skip R2 image uploads (metadata-only publish).",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         default=False,
@@ -69,12 +81,34 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(verbose=args.verbose)
 
+    # Build R2 config if credentials are available and images not skipped
+    r2_config = None
+    if not args.skip_images:
+        r2_account_id = os.environ.get("R2_ACCOUNT_ID", "")
+        r2_access_key = os.environ.get("R2_ACCESS_KEY_ID", "")
+        r2_secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+        r2_bucket = os.environ.get("R2_BUCKET_NAME", "shot-image")
+        r2_public_url = os.environ.get("R2_PUBLIC_URL", "")
+
+        if r2_account_id and r2_access_key and r2_secret_key and r2_public_url:
+            r2_config = R2Config(
+                account_id=r2_account_id,
+                access_key_id=r2_access_key,
+                secret_access_key=r2_secret_key,
+                bucket_name=r2_bucket,
+                public_url=r2_public_url,
+            )
+            logger.info("R2 image uploads enabled (bucket: %s)", r2_bucket)
+        else:
+            logger.info("R2 credentials not set — skipping image uploads")
+
     try:
         result = publish_to_airtable(
             capture_dir=args.capture_dir,
             api_key=args.api_key,
             base_id=args.base_id,
             dry_run=args.dry_run,
+            r2_config=r2_config,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

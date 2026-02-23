@@ -17,6 +17,14 @@ from typing import Any
 
 from pyairtable import Api
 
+from publisher.r2_uploader import (
+    R2Config,
+    R2UploadError,
+    build_attachment_urls,
+    create_s3_client,
+    upload_scene_frames,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,16 +98,20 @@ def build_video_fields(analysis: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_shot_records(
-    analysis: dict[str, Any], video_record_id: str
+    analysis: dict[str, Any],
+    video_record_id: str,
+    attachment_urls: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build list of Shot record field dicts from analysis.
 
-    Each scene produces 1 Shot record. Scene Start / Scene End images
-    are deferred to the R2 image attachment phase.
+    Each scene produces 1 Shot record. If attachment_urls is provided,
+    Scene Start / Scene End attachment fields are merged in.
 
     Args:
         analysis: Parsed analysis dict.
         video_record_id: Airtable record ID for the parent Video.
+        attachment_urls: Optional list of dicts (one per scene) with
+            Scene Start/End Airtable attachment values from R2 upload.
 
     Returns:
         List of field dicts ready for Airtable batch_create.
@@ -112,23 +124,27 @@ def build_shot_records(
         description = scene.get("description")
         ai_status = "Done" if description else "Queued"
 
-        shots.append(
-            {
-                "Shot Label": f"S{idx + 1:02d}",
-                "Video": [video_record_id],
-                "Timestamp (sec)": scene["startTimestamp"],
-                "Timestamp (hh:mm:ss)": format_timestamp_hms(
-                    scene["startTimestamp"]
-                ),
-                "Transcript Start (sec)": scene["startTimestamp"],
-                "Transcript End (sec)": scene["endTimestamp"],
-                "AI Description (Local)": description,
-                "AI Model": model,
-                "AI Status": ai_status,
-                "Capture Method": "Auto Import",
-                "Source Device": "Desktop",
-            }
-        )
+        record = {
+            "Shot Label": f"S{idx + 1:02d}",
+            "Video": [video_record_id],
+            "Timestamp (sec)": scene["startTimestamp"],
+            "Timestamp (hh:mm:ss)": format_timestamp_hms(
+                scene["startTimestamp"]
+            ),
+            "Transcript Start (sec)": scene["startTimestamp"],
+            "Transcript End (sec)": scene["endTimestamp"],
+            "AI Description (Local)": description,
+            "AI Model": model,
+            "AI Status": ai_status,
+            "Capture Method": "Auto Import",
+            "Source Device": "Desktop",
+        }
+
+        # Merge image attachments if available
+        if attachment_urls and idx < len(attachment_urls):
+            record.update(attachment_urls[idx])
+
+        shots.append(record)
 
     return shots
 
@@ -138,11 +154,13 @@ def publish_to_airtable(
     api_key: str,
     base_id: str,
     dry_run: bool = False,
+    r2_config: R2Config | None = None,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
     Reads analysis.json, upserts a Video record, and creates Shot records
-    (one per scene).
+    (one per scene). If r2_config is provided, uploads boundary frame
+    images to R2 and attaches them as Scene Start / Scene End.
 
     Idempotent: re-running deletes existing Shot records for the video
     before creating new ones.
@@ -152,6 +170,7 @@ def publish_to_airtable(
         api_key: Airtable personal access token.
         base_id: Airtable base ID (e.g., "appXYZ...").
         dry_run: If True, preview what would be published without writing.
+        r2_config: Optional R2 configuration for image uploads.
 
     Returns:
         Summary dict with video_record_id, shots_created, video_id.
@@ -169,14 +188,30 @@ def publish_to_airtable(
     video_id = analysis["videoId"]
     video_fields = build_video_fields(analysis)
 
+    # Upload images to R2 if configured
+    attachment_urls: list[dict[str, Any]] | None = None
+    if r2_config:
+        try:
+            s3_client = create_s3_client(r2_config)
+            url_map = upload_scene_frames(
+                s3_client, r2_config, capture_dir, analysis
+            )
+            attachment_urls = build_attachment_urls(analysis, url_map)
+        except R2UploadError as e:
+            raise PublisherError(f"Image upload failed: {e}") from e
+
     if dry_run:
-        shot_records = build_shot_records(analysis, video_record_id="DRY_RUN")
+        shot_records = build_shot_records(
+            analysis, video_record_id="DRY_RUN",
+            attachment_urls=attachment_urls,
+        )
         return {
             "dry_run": True,
             "video_id": video_id,
             "shots_to_create": len(shot_records),
             "video_fields": video_fields,
             "shot_records": shot_records,
+            "images_uploaded": len(url_map) if r2_config else 0,
         }
 
     try:
@@ -210,7 +245,10 @@ def publish_to_airtable(
                 )
 
         # Create new Shot records
-        shot_records = build_shot_records(analysis, video_record_id)
+        shot_records = build_shot_records(
+            analysis, video_record_id,
+            attachment_urls=attachment_urls,
+        )
         created = shots_table.batch_create(shot_records)
         logger.info("Created %d Shot records", len(created))
 

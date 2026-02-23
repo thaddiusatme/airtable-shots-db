@@ -20,6 +20,7 @@ from analyzer.scene_detector import (
     load_manifest,
     write_analysis,
 )
+from analyzer.vlm_describer import describe_scenes
 
 logger = logging.getLogger("analyzer")
 
@@ -136,9 +137,14 @@ def main(argv: list[str] | None = None) -> int:
     # Build analysis structure
     analysis = build_analysis(manifest, scene_starts)
 
-    # Pass 2: Ollama VLM (placeholder — will be implemented in P1)
+    # Pass 2: Ollama VLM descriptions
     if not args.skip_vlm:
-        logger.info("[Pass 2] VLM descriptions not yet implemented. Use --skip-vlm to suppress this message.")
+        t1 = time.monotonic()
+        analysis = describe_scenes(args.capture_dir, analysis)
+        elapsed_vlm = time.monotonic() - t1
+        logger.info("[Pass 2] Complete in %.1fs", elapsed_vlm)
+    else:
+        logger.info("[Pass 2] Skipped (--skip-vlm)")
 
     # Write output
     write_analysis(args.capture_dir, analysis)

@@ -60,6 +60,12 @@ def run_pass1(
         dist = compute_histogram_distance(frame_a, frame_b)
         distances.append(dist)
 
+        logger.debug(
+            "[Pass 1] %s -> %s: %.4f",
+            frames[i]["filename"],
+            frames[i + 1]["filename"],
+            dist,
+        )
         if (i + 1) % 100 == 0 or i == num_frames - 2:
             logger.info("[Pass 1] Processing frame %d/%d...", i + 1, num_frames - 1)
 
@@ -93,8 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Histogram distance threshold for scene boundary detection (default: 0.5).",
+        default=10.0,
+        help="Histogram distance threshold for scene boundary detection (default: 10.0).",
     )
     parser.add_argument(
         "--skip-vlm",

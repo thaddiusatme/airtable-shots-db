@@ -85,7 +85,7 @@ def compute_histogram_distance(frame_a_path: str, frame_b_path: str) -> float:
 
 
 def detect_boundaries(
-    distances: list[float], threshold: float = 0.5
+    distances: list[float], threshold: float = 10.0
 ) -> list[int]:
     """Detect scene boundaries from a list of frame-to-frame distances.
 

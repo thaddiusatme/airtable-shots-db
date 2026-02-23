@@ -94,6 +94,7 @@ CAPTURE                      ANALYZE                       PUBLISH
 
 > **Pass 1 Status**: Implemented on branch `feature/scene-analyzer` (commit `1134cad`, 2026-02-22)
 > **Pass 2 Status**: Implemented (commit `117bfcc`, 2026-02-22)
+> **Real-data validated**: End-to-end on `6KktB5aNrjE` — 5 scenes from 10 frames, VLM in 42.3s (commit `abb241b`)
 > **Tests**: 57 passing (29 scene_detector + 8 CLI + 20 VLM)
 >
 > **Pass 1 Lessons learned**:
@@ -109,6 +110,13 @@ CAPTURE                      ANALYZE                       PUBLISH
 > - Custom `OllamaError` exception provides a clean abstraction: callers catch one type instead of checking for `ConnectionError`, `Timeout`, and HTTP status codes separately
 > - The `requests` library was listed in `requirements.txt` but not installed in the venv — need to verify venv state matches requirements before running tests
 > - Keeping `vlm_describer.py` separate from `scene_detector.py` preserves single-responsibility: OpenCV code has no HTTP/network dependencies, VLM code has no OpenCV dependencies
+>
+> **Real-data testing lessons**:
+> - Chi-squared histogram distances on real video span 0–3000+, not 0–1 as with synthetic test frames. Default threshold changed from 0.5 → 10.0
+> - Within-scene motion (camera pans, slight color shifts) produces distances 0–2; actual scene cuts produce 10–3000+
+> - Verbose (`-v`) distance logging per frame pair is essential for threshold tuning — added as `logger.debug()` output
+> - VLM descriptions on real data are coherent: model correctly identified "House of the Dragon", "King Viserys", throne room settings from boundary frames
+> - End-to-end timing on 10 real frames: Pass 1 in 0.4s, Pass 2 (5 scenes × llama3.2-vision) in 42.3s (~8.5s/scene)
 
 New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 

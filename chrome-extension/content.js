@@ -103,11 +103,13 @@ async function extractTranscript() {
         transcriptPanel = await waitForElement('ytd-transcript-renderer', 5000);
       }
       
-      // Try alternative engagement panel selector
+      // Try alternative engagement panel selectors (YouTube updated target-id in Feb 2026)
       if (!transcriptPanel) {
-        const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]');
+        const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]') ||
+                                document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]') ||
+                                document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]');
         if (engagementPanel) {
-          transcriptPanel = engagementPanel.querySelector('ytd-transcript-renderer');
+          transcriptPanel = engagementPanel.querySelector('ytd-transcript-renderer') || engagementPanel;
         }
       }
     }
@@ -133,15 +135,75 @@ async function extractTranscript() {
       };
     }
     
-    // Extract text from each segment
-    const transcriptText = Array.from(segments)
+    // Helper function to parse timestamp to seconds
+    function parseTimestampToSeconds(timestamp) {
+      if (!timestamp) return null;
+      const parts = timestamp.split(':').map(Number);
+      if (parts.length === 2) {
+        // M:SS format
+        return parts[0] * 60 + parts[1];
+      } else if (parts.length === 3) {
+        // H:MM:SS format
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      }
+      return null;
+    }
+    
+    const transcriptSegments = Array.from(segments)
       .map(seg => {
-        // Try multiple selectors for text content
-        const textElement = seg.querySelector('.segment-text') ||
-                           seg.querySelector('yt-formatted-string') ||
-                           seg;
-        return textElement?.textContent?.trim();
+        // Try ALL possible approaches to find timestamp and text
+        let timestampStr = null;
+        let text = null;
+        
+        // Approach 1: span.yt-core-attributed-string (Feb 2026 DOM)
+        const coreSpans = seg.querySelectorAll('span.yt-core-attributed-string');
+        
+        // Approach 2: div children with specific roles
+        const divChildren = seg.querySelectorAll('div');
+        
+        // Approach 3: All direct children
+        const directChildren = Array.from(seg.children);
+        
+        // Approach 4: yt-formatted-string elements
+        const ytFormatted = seg.querySelectorAll('yt-formatted-string');
+        
+        // Approach 5: Any element containing a timestamp pattern (M:SS or H:MM:SS)  
+        const allEls = seg.querySelectorAll('*');
+        for (const el of allEls) {
+          const txt = el.textContent.trim();
+          // Check if this looks like a timestamp (matches M:SS or H:MM:SS)
+          if (!timestampStr && /^\d{1,2}:\d{2}(:\d{2})?$/.test(txt)) {
+            timestampStr = txt;
+          }
+        }
+        
+        if (coreSpans.length >= 2) {
+          if (!timestampStr) timestampStr = coreSpans[0]?.textContent?.trim();
+          text = coreSpans[1]?.textContent?.trim();
+        } else if (ytFormatted.length >= 2) {
+          if (!timestampStr) timestampStr = ytFormatted[0]?.textContent?.trim();
+          text = ytFormatted[1]?.textContent?.trim();
+        } else if (directChildren.length >= 2) {
+          if (!timestampStr) timestampStr = directChildren[0]?.textContent?.trim();
+          text = directChildren[1]?.textContent?.trim();
+        } else {
+          // Last resort: full text content, strip timestamp if found
+          const fullText = seg.textContent.trim();
+          if (timestampStr && fullText.startsWith(timestampStr)) {
+            text = fullText.substring(timestampStr.length).trim();
+          } else {
+            text = fullText;
+          }
+        }
+        
+        const start = parseTimestampToSeconds(timestampStr);
+        return { text, start };
       })
+      .filter(item => item.text);
+    
+    // Build full transcript text from segments (backward compatible)
+    const transcriptText = transcriptSegments
+      .map(seg => seg.text)
       .filter(Boolean)
       .join(' ');
     
@@ -155,7 +217,12 @@ async function extractTranscript() {
       else if (langText?.includes('german')) language = 'de';
     }
     
-    console.log(`Extracted ${segments.length} segments, ${transcriptText.length} characters`);
+    const timestampedCount = transcriptSegments.filter(s => s.start !== null).length;
+    console.log(`Extracted ${segments.length} segments, ${timestampedCount} with timestamps, ${transcriptText.length} characters`);
+    if (transcriptSegments.length > 0) {
+      console.log('First segment:', JSON.stringify(transcriptSegments[0]));
+      console.log('Last segment:', JSON.stringify(transcriptSegments[transcriptSegments.length - 1]));
+    }
     
     // Extract channel info from DOM
     const channelLink = document.querySelector('ytd-video-owner-renderer ytd-channel-name a') ||
@@ -182,6 +249,7 @@ async function extractTranscript() {
       videoId,
       videoTitle,
       transcript: transcriptText,
+      transcriptSegments,  // NEW: timestamped segments
       language,
       source: 'youtube-web-ui-dom',
       fetchedAt: new Date().toISOString(),

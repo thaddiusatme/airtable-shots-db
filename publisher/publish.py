@@ -24,6 +24,7 @@ from publisher.r2_uploader import (
     create_s3_client,
     upload_scene_frames,
 )
+from segmenter.transcript_segmenter import segment_transcript_by_scenes
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +90,13 @@ def build_video_fields(analysis: dict[str, Any]) -> dict[str, Any]:
         Dict of Airtable field names to values for the Videos table.
     """
     video_id = analysis["videoId"]
+    thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     return {
         "Video ID": video_id,
         "Platform": "YouTube",
         "Video URL": f"https://www.youtube.com/watch?v={video_id}",
-        "Thumbnail URL": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+        "Thumbnail URL": thumbnail_url,
+        "Thumbnail (Image)": [{"url": thumbnail_url}],
     }
 
 
@@ -101,6 +104,7 @@ def build_shot_records(
     analysis: dict[str, Any],
     video_record_id: str,
     attachment_urls: list[dict[str, Any]] | None = None,
+    scene_transcripts: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build list of Shot record field dicts from analysis.
 
@@ -143,6 +147,10 @@ def build_shot_records(
         # Merge image attachments if available
         if attachment_urls and idx < len(attachment_urls):
             record.update(attachment_urls[idx])
+        
+        # Add transcript line if available
+        if scene_transcripts and idx in scene_transcripts:
+            record["Transcript Line"] = scene_transcripts[idx]
 
         shots.append(record)
 
@@ -155,6 +163,7 @@ def publish_to_airtable(
     base_id: str,
     dry_run: bool = False,
     r2_config: R2Config | None = None,
+    segment_transcripts: bool = False,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
@@ -199,11 +208,17 @@ def publish_to_airtable(
             attachment_urls = build_attachment_urls(analysis, url_map)
         except R2UploadError as e:
             raise PublisherError(f"Image upload failed: {e}") from e
+    
+    # Segment transcripts if requested (requires existing Video record)
+    scene_transcripts: dict[int, str] = {}
+    if segment_transcripts:
+        logger.info("Transcript segmentation requested, will fetch after Video lookup")
 
     if dry_run:
         shot_records = build_shot_records(
             analysis, video_record_id="DRY_RUN",
             attachment_urls=attachment_urls,
+            scene_transcripts=scene_transcripts,
         )
         return {
             "dry_run": True,
@@ -228,10 +243,25 @@ def publish_to_airtable(
             video_record_id = existing_videos[0]["id"]
             videos_table.update(video_record_id, video_fields)
             logger.info("Updated existing Video record: %s", video_record_id)
+            
+            # Fetch timestamped transcript for segmentation if enabled
+            if segment_transcripts:
+                timestamped_transcript = existing_videos[0]["fields"].get("Transcript (Timestamped)")
+                if timestamped_transcript:
+                    scene_transcripts = segment_transcript_by_scenes(
+                        timestamped_transcript,
+                        analysis["scenes"]
+                    )
+                    logger.info("Segmented transcript into %d scenes", len(scene_transcripts))
+                else:
+                    logger.warning("Transcript segmentation requested but no timestamped transcript found")
         else:
             result = videos_table.create(video_fields)
             video_record_id = result["id"]
             logger.info("Created new Video record: %s", video_record_id)
+            
+            if segment_transcripts:
+                logger.warning("Cannot segment transcripts for newly created Video (no transcript data yet)")
 
         # Delete existing shots for idempotency.
         # Linked record fields can't be queried by record ID in formulas,
@@ -248,6 +278,7 @@ def publish_to_airtable(
         shot_records = build_shot_records(
             analysis, video_record_id,
             attachment_urls=attachment_urls,
+            scene_transcripts=scene_transcripts,
         )
         created = shots_table.batch_create(shot_records)
         logger.info("Created %d Shot records", len(created))

@@ -77,6 +77,12 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Enable verbose/debug logging.",
     )
+    parser.add_argument(
+        "--segment-transcripts",
+        action="store_true",
+        default=False,
+        help="Segment transcript by scene boundaries (requires timestamped transcript in Videos table).",
+    )
     args = parser.parse_args(argv)
 
     configure_logging(verbose=args.verbose)
@@ -109,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             base_id=args.base_id,
             dry_run=args.dry_run,
             r2_config=r2_config,
+            segment_transcripts=args.segment_transcripts,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

@@ -24,6 +24,7 @@ from publisher.r2_uploader import (
     create_s3_client,
     upload_scene_frames,
 )
+from segmenter.scene_merger import merge_short_scenes
 from segmenter.transcript_segmenter import segment_transcript_by_scenes
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,8 @@ def publish_to_airtable(
     dry_run: bool = False,
     r2_config: R2Config | None = None,
     segment_transcripts: bool = False,
+    merge_scenes: bool = False,
+    min_scene_duration: float = 5.0,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
@@ -196,6 +199,19 @@ def publish_to_airtable(
     analysis = load_analysis(capture_dir)
     video_id = analysis["videoId"]
     video_fields = build_video_fields(analysis)
+
+    # Merge short scenes if requested
+    if merge_scenes:
+        original_count = len(analysis["scenes"])
+        analysis["scenes"] = merge_short_scenes(
+            analysis["scenes"], min_duration=min_scene_duration
+        )
+        logger.info(
+            "Merged %d scenes into %d (min_duration=%.1fs)",
+            original_count,
+            len(analysis["scenes"]),
+            min_scene_duration,
+        )
 
     # Upload images to R2 if configured
     attachment_urls: list[dict[str, Any]] | None = None

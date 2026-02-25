@@ -83,6 +83,18 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Segment transcript by scene boundaries (requires timestamped transcript in Videos table).",
     )
+    parser.add_argument(
+        "--merge-scenes",
+        action="store_true",
+        default=False,
+        help="Merge short adjacent scenes into longer shots before publishing.",
+    )
+    parser.add_argument(
+        "--min-scene-duration",
+        type=float,
+        default=5.0,
+        help="Minimum scene duration in seconds when --merge-scenes is used (default: 5.0).",
+    )
     args = parser.parse_args(argv)
 
     configure_logging(verbose=args.verbose)
@@ -116,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             r2_config=r2_config,
             segment_transcripts=args.segment_transcripts,
+            merge_scenes=args.merge_scenes,
+            min_scene_duration=args.min_scene_duration,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

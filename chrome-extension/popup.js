@@ -3,6 +3,11 @@
 let currentTranscriptData = null;
 let isCapturing = false;
 let captureFolder = '';
+let pipelineRunId = null;
+let pipelinePollTimer = null;
+let pollFailCount = 0;
+
+const PIPELINE_SERVER = 'http://127.0.0.1:3333';
 
 // DOM elements — Transcript
 const statusMessage = document.getElementById('statusMessage');
@@ -14,7 +19,15 @@ const extractBtn = document.getElementById('extractBtn');
 const saveBtn = document.getElementById('saveBtn');
 const settingsLink = document.getElementById('settingsLink');
 
-// DOM elements — Capture
+// DOM elements — Pipeline
+const runPipelineBtn = document.getElementById('runPipelineBtn');
+const pipelineIntervalInput = document.getElementById('pipelineInterval');
+const pipelineMaxFramesInput = document.getElementById('pipelineMaxFrames');
+const pipelineStatusDiv = document.getElementById('pipelineStatus');
+const pipelineStepSpan = document.getElementById('pipelineStep');
+const serverOfflineDiv = document.getElementById('serverOffline');
+
+// DOM elements — Capture (Legacy)
 const captureIntervalInput = document.getElementById('captureInterval');
 const captureMaxInput = document.getElementById('captureMax');
 const captureStatusDiv = document.getElementById('captureStatus');
@@ -289,7 +302,159 @@ function openSettings() {
   chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
 }
 
-// --- Capture Orchestration ---
+// --- Pipeline Server Integration ---
+
+const POLL_INTERVAL_MS = 3000;
+
+async function checkServerHealth() {
+  try {
+    const res = await fetch(`${PIPELINE_SERVER}/health`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      serverOfflineDiv.classList.add('hidden');
+      return true;
+    }
+  } catch (e) {
+    // Server not reachable
+  }
+  serverOfflineDiv.classList.remove('hidden');
+  return false;
+}
+
+async function runFullPipeline() {
+  runPipelineBtn.disabled = true;
+  runPipelineBtn.textContent = 'Running...';
+  pipelineStatusDiv.classList.remove('hidden');
+  pipelineStepSpan.textContent = 'Extracting transcript...';
+
+  try {
+    // Step 1: Check server health
+    const serverUp = await checkServerHealth();
+    if (!serverUp) {
+      showError('Pipeline server is not running. Please start it first.');
+      resetPipelineUI();
+      return;
+    }
+
+    // Step 2: Extract transcript from YouTube DOM
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.url?.includes('youtube.com/watch')) {
+      showError('Navigate to a YouTube video page first');
+      resetPipelineUI();
+      return;
+    }
+
+    let transcriptData;
+    try {
+      transcriptData = await chrome.tabs.sendMessage(tab.id, { action: 'extractTranscript' });
+    } catch (msgError) {
+      showError('Content script not loaded. Reload the YouTube page and try again.');
+      resetPipelineUI();
+      return;
+    }
+
+    if (transcriptData.error) {
+      showError(transcriptData.error);
+      resetPipelineUI();
+      return;
+    }
+
+    // Store for UI display
+    currentTranscriptData = transcriptData;
+    videoTitle.textContent = transcriptData.videoTitle;
+    videoId.textContent = `ID: ${transcriptData.videoId}`;
+    videoInfo.classList.remove('hidden');
+
+    // Step 3: POST to pipeline server
+    pipelineStepSpan.textContent = 'Sending to pipeline server...';
+
+    const interval = parseFloat(pipelineIntervalInput.value) || 5;
+    const maxFrames = parseInt(pipelineMaxFramesInput.value) || 100;
+
+    const res = await fetch(`${PIPELINE_SERVER}/pipeline/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        videoUrl: `https://www.youtube.com/watch?v=${transcriptData.videoId}`,
+        videoId: transcriptData.videoId,
+        videoTitle: transcriptData.videoTitle,
+        transcript: transcriptData.transcript,
+        capture: { interval, maxFrames },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Server returned an error');
+    }
+
+    const { runId } = await res.json();
+    pipelineRunId = runId;
+    pipelineStepSpan.textContent = 'Pipeline started — polling for status...';
+    showStatus(`Pipeline running (${runId.slice(0, 8)}...)`, 'info');
+
+    // Step 4: Start polling
+    startPipelinePolling(runId);
+
+  } catch (error) {
+    showError(`Pipeline error: ${error.message}`);
+    resetPipelineUI();
+    console.error('Pipeline error:', error);
+  }
+}
+
+function startPipelinePolling(runId) {
+  if (pipelinePollTimer) clearInterval(pipelinePollTimer);
+  pollFailCount = 0;
+
+  pipelinePollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${PIPELINE_SERVER}/pipeline/status/${runId}`);
+      if (!res.ok) {
+        console.error('Poll failed:', res.status);
+        return;
+      }
+      pollFailCount = 0;
+
+      const job = await res.json();
+      const stepInfo = job.step ? ` [${job.step}]` : '';
+      const completedInfo = job.completedSteps?.length ? ` (${job.completedSteps.length}/4 steps done)` : '';
+      pipelineStepSpan.textContent = (job.message || job.status) + completedInfo;
+
+      if (job.status === 'done') {
+        clearInterval(pipelinePollTimer);
+        pipelinePollTimer = null;
+        showSuccess('✓ Pipeline complete! Shots published to Airtable.');
+        runPipelineBtn.textContent = 'Pipeline Complete ✓';
+        pipelineStepSpan.textContent = 'Done — shots published to Airtable + R2';
+      } else if (job.status === 'error') {
+        clearInterval(pipelinePollTimer);
+        pipelinePollTimer = null;
+        showError(`Pipeline failed at step '${job.step}': ${job.error}`);
+        resetPipelineUI();
+      }
+    } catch (e) {
+      pollFailCount++;
+      console.error(`Poll error (${pollFailCount}):`, e);
+      if (pollFailCount >= 3) {
+        clearInterval(pipelinePollTimer);
+        pipelinePollTimer = null;
+        showError('Lost connection to pipeline server. Check if the server is still running.');
+        resetPipelineUI();
+      }
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+function resetPipelineUI() {
+  runPipelineBtn.disabled = false;
+  runPipelineBtn.textContent = 'Run Full Pipeline';
+  if (pipelinePollTimer) {
+    clearInterval(pipelinePollTimer);
+    pipelinePollTimer = null;
+  }
+}
+
+// --- Capture Orchestration (Legacy) ---
 
 async function startCapture() {
   const interval = parseFloat(captureIntervalInput.value) || 1;
@@ -397,6 +562,7 @@ settingsLink.addEventListener('click', (e) => {
   e.preventDefault();
   openSettings();
 });
+runPipelineBtn.addEventListener('click', runFullPipeline);
 startCaptureBtn.addEventListener('click', startCapture);
 stopCaptureBtn.addEventListener('click', stopCapture);
 openFolderAnchor.addEventListener('click', (e) => {
@@ -412,8 +578,13 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     showStatus('Navigate to a YouTube video page to extract transcripts', 'info');
     extractBtn.disabled = true;
     startCaptureBtn.disabled = true;
+    runPipelineBtn.disabled = true;
   } else {
-    showStatus('Ready! Click "Extract Transcript" to begin', 'info');
+    showStatus('Ready! Click "Extract Transcript" or "Run Full Pipeline"', 'info');
     startCaptureBtn.disabled = false;
+    // Check server health to enable/disable pipeline button
+    checkServerHealth().then((ok) => {
+      runPipelineBtn.disabled = !ok;
+    });
   }
 });

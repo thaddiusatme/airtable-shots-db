@@ -245,6 +245,11 @@ async function saveToAirtable() {
         'Transcript Language': currentTranscriptData.language,
         'Transcript Source': currentTranscriptData.source
       };
+      
+      // Add timestamped transcript if available
+      if (currentTranscriptData.transcriptSegments && currentTranscriptData.transcriptSegments.length > 0) {
+        createFields['Transcript (Timestamped)'] = JSON.stringify(currentTranscriptData.transcriptSegments);
+      }
 
       if (channelRecordId) {
         createFields['Channel'] = [channelRecordId];
@@ -263,19 +268,24 @@ async function saveToAirtable() {
       const recordId = findResult.records[0].id;
       const updateUrl = `https://api.airtable.com/v0/${airtableBaseId}/Videos/${recordId}`;
       
+      const updateFields = {
+        'Transcript (Full)': currentTranscriptData.transcript,
+        'Transcript Language': currentTranscriptData.language,
+        'Transcript Source': currentTranscriptData.source
+      };
+      
+      // Add timestamped transcript if available
+      if (currentTranscriptData.transcriptSegments && currentTranscriptData.transcriptSegments.length > 0) {
+        updateFields['Transcript (Timestamped)'] = JSON.stringify(currentTranscriptData.transcriptSegments);
+      }
+      
       saveResponse = await fetch(updateUrl, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${airtableApiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          fields: {
-            'Transcript (Full)': currentTranscriptData.transcript,
-            'Transcript Language': currentTranscriptData.language,
-            'Transcript Source': currentTranscriptData.source
-          }
-        })
+        body: JSON.stringify({ fields: updateFields })
       });
     }
     
@@ -369,6 +379,7 @@ async function runFullPipeline() {
 
     const interval = parseFloat(pipelineIntervalInput.value) || 5;
     const maxFrames = parseInt(pipelineMaxFramesInput.value) || 100;
+    const skipVlm = document.getElementById('skipVlmCheckbox').checked;
 
     const res = await fetch(`${PIPELINE_SERVER}/pipeline/run`, {
       method: 'POST',
@@ -378,7 +389,9 @@ async function runFullPipeline() {
         videoId: transcriptData.videoId,
         videoTitle: transcriptData.videoTitle,
         transcript: transcriptData.transcript,
+        transcriptSegments: transcriptData.transcriptSegments,
         capture: { interval, maxFrames },
+        skipVlm,
       }),
     });
 

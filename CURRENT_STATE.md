@@ -1,8 +1,8 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** February 23, 2026  
-**Branch:** `feature/airtable-publisher`  
-**Status:** Phase 3 Complete + R2 Image Attachments Working
+**Last Updated:** February 27, 2026  
+**Branch:** `feature/merge-short-scenes`  
+**Status:** Phase 3 Complete + R2 Image Attachments + Transcript Segmentation + Scene Merger
 
 ---
 
@@ -50,11 +50,13 @@ Three-phase pipeline for extracting, analyzing, and publishing YouTube video sho
 
 **Module Structure:**
 - `analyzer/scene_detector.py` — OpenCV histogram analysis
-- `analyzer/vlm_describer.py` — Ollama API integration
+- `analyzer/vlm_describer.py` — Ollama VLM integration
 - `analyzer/analyze.py` — CLI with `--capture-dir`, `--threshold`, `--skip-vlm`, `--verbose`
 - `analyzer/__main__.py` — `python -m analyzer` support
+- `segmenter/transcript_segmenter.py` — Overlap-based transcript segmentation
+- `segmenter/scene_merger.py` — Merge short scenes into longer shots
 
-**Tests:** 57 passing (29 scene_detector + 8 CLI + 20 VLM, all mocked)
+**Tests:** 70 passing (29 scene_detector + 8 CLI + 20 VLM + 13 transcript_segmenter, all mocked)
 
 **Real-data validation:** 5 scenes from 10 frames, VLM in 42.3s
 
@@ -82,7 +84,7 @@ Three-phase pipeline for extracting, analyzing, and publishing YouTube video sho
 - `publisher/cli.py` — CLI with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--verbose`
 - `publisher/__main__.py` — `python -m publisher` support
 
-**Tests:** 130 passing (47 publisher + 8 CLI + 18 r2_uploader + 57 analyzer)
+**Tests:** 151 passing (47 publisher + 8 CLI + 18 r2_uploader + 70 analyzer + 8 scene_merger)
 
 **Real-data validation:** KGHoVptow30, 34 scenes → 67 frames to R2 → 34 Shot records with thumbnails
 
@@ -156,10 +158,12 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 | Analyzer (scene_detector) | 29 | ✅ Passing |
 | Analyzer (CLI) | 8 | ✅ Passing |
 | Analyzer (VLM) | 20 | ✅ Passing |
+| Segmenter (transcript) | 13 | ✅ Passing |
+| Segmenter (scene merger) | 8 | ✅ Passing |
 | Publisher (core) | 47 | ✅ Passing |
 | Publisher (CLI) | 8 | ✅ Passing |
 | Publisher (R2 uploader) | 18 | ✅ Passing |
-| **Total** | **130** | **✅ All Passing** |
+| **Total** | **151** | **✅ All Passing** |
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).
 

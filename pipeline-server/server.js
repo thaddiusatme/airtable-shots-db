@@ -30,7 +30,7 @@ app.get('/health', (req, res) => {
 
 // Start a pipeline run
 app.post('/pipeline/run', (req, res) => {
-  const { videoUrl, videoId, videoTitle, transcript, capture } = req.body;
+  const { videoUrl, videoId, videoTitle, transcript, transcriptSegments, capture, skipVlm } = req.body;
 
   if (!videoUrl || !videoId) {
     return res.status(400).json({ error: 'videoUrl and videoId are required' });
@@ -46,7 +46,7 @@ app.post('/pipeline/run', (req, res) => {
     error: null,
     errorDetail: null,
     completedSteps: [],
-    input: { videoUrl, videoId, videoTitle, transcript, capture },
+    input: { videoUrl, videoId, videoTitle, transcript, transcriptSegments, capture, skipVlm: !!skipVlm },
     captureDir: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

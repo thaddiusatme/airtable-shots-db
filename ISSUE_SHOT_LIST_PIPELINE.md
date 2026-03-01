@@ -95,7 +95,7 @@ CAPTURE                      ANALYZE                       PUBLISH
 > **Pass 1 Status**: Implemented on branch `feature/scene-analyzer` (commit `1134cad`, 2026-02-22)
 > **Pass 2 Status**: Implemented (commit `117bfcc`, 2026-02-22)
 > **Real-data validated**: End-to-end on `6KktB5aNrjE` — 5 scenes from 10 frames, VLM in 42.3s (commit `abb241b`)
-> **Tests**: 57 passing (29 scene_detector + 8 CLI + 20 VLM)
+> **Tests**: 70 passing (29 scene_detector + 8 CLI + 20 VLM + 13 transcript_segmenter)
 >
 > **Pass 1 Lessons learned**:
 > - TDD RED phase: writing tests first that import from non-existent module confirms the test harness works before any implementation
@@ -171,7 +171,7 @@ New module in `airtable-shots-db/analyzer/` with two-pass strategy:
 ## Phase 3: Airtable Publisher (Python) — COMPLETE
 
 > **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`88524d7`, 2026-02-22)
-> **Tests**: 114 total passing (49 publisher + 8 CLI + 57 analyzer)
+> **Tests**: 151 total passing (47 publisher + 8 CLI + 18 r2_uploader + 70 analyzer + 8 scene_merger)
 > **Real-data validated**: KGHoVptow30, 34 scenes → 34 Shot records published to Airtable
 >
 > **Lessons learned (TDD)**:
@@ -248,8 +248,8 @@ Integration:
 ## Acceptance Criteria
 
 - [x] Phase 1: Chrome extension captures frames at configurable interval, generates manifest.json, downloads to local folder
-- [ ] Phase 2: Analyzer detects scene boundaries via OpenCV, generates analysis.json with VLM descriptions
-- [ ] Phase 3: Publisher reads analysis.json, creates Shot records in Airtable with linked Video
+- [x] Phase 2: Analyzer detects scene boundaries via OpenCV, generates analysis.json with VLM descriptions
+- [x] Phase 3: Publisher reads analysis.json, creates Shot records in Airtable with linked Video
 - [ ] End-to-end test: capture → analyze → publish workflow produces curated shot list in Airtable
 - [ ] Free plan budget respected: ~12–33 videos before hitting 1,000 record limit
 

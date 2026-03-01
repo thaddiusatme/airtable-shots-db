@@ -108,9 +108,10 @@ Added "Capture Shots" feature to the Chrome extension — captures timestamped P
 
 ### 📋 Next Steps
 
-- [ ] **Phase 2**: Scene Analyzer (Python, OpenCV histogram + Ollama VLM)
-- [ ] **Phase 3**: Airtable Publisher (create Shot records from analysis.json)
+- [x] **Phase 2**: Scene Analyzer (Python, OpenCV histogram + Ollama VLM) — 70 tests passing
+- [x] **Phase 3**: Airtable Publisher (create Shot records from analysis.json) — 73 tests passing
+- [x] **Phase 3.5**: R2 Image Attachments — 18 tests passing
 - [ ] **Phase 4**: yt-frame-poc CLI alignment
-- [ ] **Phase 5**: Cloud storage for Shot Image attachments
+- [ ] **Phase 5**: Production readiness (end-to-end test, error handling)
 
 See `ISSUE_SHOT_LIST_PIPELINE.md` for full pipeline spec.

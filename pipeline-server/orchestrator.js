@@ -74,7 +74,7 @@ async function upsertVideoTranscript(job) {
     throw new Error('Missing AIRTABLE_API_KEY or AIRTABLE_BASE_ID in env');
   }
 
-  const { videoId, videoTitle, videoUrl, transcript } = job.input;
+  const { videoId, videoTitle, videoUrl, transcript, transcriptSegments } = job.input;
 
   // Search for existing video
   const findUrl = `https://api.airtable.com/v0/${baseId}/Videos?filterByFormula=` +
@@ -94,21 +94,26 @@ async function upsertVideoTranscript(job) {
 
   if (findResult.records.length === 0) {
     // Create new video record
+    const fields = {
+      'Video Title': videoTitle,
+      'Video ID': videoId,
+      'Platform': 'YouTube',
+      'Video URL': videoUrl,
+      'Triage Status': 'Queued',
+      'Thumbnail URL': thumbnailUrl,
+      'Thumbnail (Image)': [{ url: thumbnailUrl }],
+      'Transcript (Full)': transcript,
+    };
+    
+    // Add timestamped transcript if available
+    if (transcriptSegments && transcriptSegments.length > 0) {
+      fields['Transcript (Timestamped)'] = JSON.stringify(transcriptSegments);
+    }
+    
     const createRes = await fetch(`https://api.airtable.com/v0/${baseId}/Videos`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fields: {
-          'Video Title': videoTitle,
-          'Video ID': videoId,
-          'Platform': 'YouTube',
-          'Video URL': videoUrl,
-          'Triage Status': 'Queued',
-          'Thumbnail URL': thumbnailUrl,
-          'Thumbnail (Image)': [{ url: thumbnailUrl }],
-          'Transcript (Full)': transcript,
-        },
-      }),
+      body: JSON.stringify({ fields }),
     });
 
     if (!createRes.ok) {
@@ -120,14 +125,19 @@ async function upsertVideoTranscript(job) {
   } else {
     // Update existing record with transcript
     const recordId = findResult.records[0].id;
+    const fields = {
+      'Transcript (Full)': transcript,
+    };
+    
+    // Add timestamped transcript if available
+    if (transcriptSegments && transcriptSegments.length > 0) {
+      fields['Transcript (Timestamped)'] = JSON.stringify(transcriptSegments);
+    }
+    
     const updateRes = await fetch(`https://api.airtable.com/v0/${baseId}/Videos/${recordId}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fields: {
-          'Transcript (Full)': transcript,
-        },
-      }),
+      body: JSON.stringify({ fields }),
     });
 
     if (!updateRes.ok) {
@@ -196,13 +206,21 @@ async function runPipeline(job, updateStatus) {
   console.log(`[orchestrator] Capture dir: ${captureDir}`);
 
   // Step 3: Analyze scenes
-  updateStatus('running', 'Analyzing scenes (OpenCV + VLM)...', 'analyze');
-  await runCommand(pythonBin, [
+  const analyzerArgs = [
     '-m', 'analyzer',
     '--capture-dir', captureDir,
     '--threshold', '10.0',
     '--verbose',
-  ], {
+  ];
+  
+  if (job.input.skipVlm) {
+    analyzerArgs.push('--skip-vlm');
+    updateStatus('running', 'Analyzing scenes (OpenCV only, VLM skipped)...', 'analyze');
+  } else {
+    updateStatus('running', 'Analyzing scenes (OpenCV + VLM)...', 'analyze');
+  }
+  
+  await runCommand(pythonBin, analyzerArgs, {
     cwd: PROJECT_ROOT,
     onStdout: (chunk) => console.log(`[analyzer] ${chunk.trimEnd()}`),
     onStderr: (chunk) => console.error(`[analyzer] ${chunk.trimEnd()}`),
@@ -217,12 +235,16 @@ async function runPipeline(job, updateStatus) {
     '--capture-dir', captureDir,
     '--api-key', process.env.AIRTABLE_API_KEY,
     '--base-id', process.env.AIRTABLE_BASE_ID,
+    '--segment-transcripts',
+    '--merge-scenes',
     '--verbose',
   ], {
     cwd: PROJECT_ROOT,
     onStdout: (chunk) => console.log(`[publisher] ${chunk.trimEnd()}`),
     onStderr: (chunk) => console.error(`[publisher] ${chunk.trimEnd()}`),
   });
+
+  job.completedSteps.push('publish');
 
   return { captureDir };
 }

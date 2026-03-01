@@ -80,6 +80,12 @@ def build_schema():
     create_field(base_id, videos_table_id, {"name": "Channel", "type": "multipleRecordLinks", "options": {
         "linkedTableId": channels_table_id
     }})
+    create_field(base_id, videos_table_id, {"name": "Platform", "type": "singleLineText"})
+    create_field(base_id, videos_table_id, {"name": "Thumbnail URL", "type": "url"})
+    create_field(base_id, videos_table_id, {"name": "Transcript (Full)", "type": "multilineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript (Timestamped)", "type": "multilineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript Language", "type": "singleLineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript Source", "type": "singleLineText"})
 
 
     print("\nStep 4: Adding schema to 'Shots' table...")

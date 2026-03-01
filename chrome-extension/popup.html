@@ -194,9 +194,43 @@
   <button id="extractBtn">Extract Transcript</button>
   <button id="saveBtn" class="hidden" disabled>Save to Airtable</button>
   
-  <!-- Capture Shots Section -->
+  <!-- Full Pipeline Section -->
   <hr class="section-divider">
-  <h2>📸 Capture Shots</h2>
+  <h2>🚀 Run Full Pipeline</h2>
+  <p style="font-size:12px;color:#666;margin:0 0 10px 0;">
+    Extract transcript → Capture frames → Analyze scenes → Publish shots
+  </p>
+
+  <div class="capture-controls">
+    <label>
+      Interval (sec)
+      <input type="number" id="pipelineInterval" value="5" min="0.5" step="0.5">
+    </label>
+    <label>
+      Max frames
+      <input type="number" id="pipelineMaxFrames" value="100" min="1" step="1">
+    </label>
+  </div>
+
+  <label style="font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+    <input type="checkbox" id="skipVlmCheckbox" checked>
+    Skip AI descriptions (faster, scene detection only)
+  </label>
+
+  <button id="runPipelineBtn" disabled>Run Full Pipeline</button>
+
+  <div id="pipelineStatus" class="capture-status hidden">
+    <strong>Status:</strong> <span id="pipelineStep">Waiting...</span>
+  </div>
+
+  <div id="serverOffline" class="status error hidden">
+    Pipeline server not running. Start it with:<br>
+    <code style="font-size:11px;">cd airtable-shots-db/pipeline-server && npm start</code>
+  </div>
+
+  <!-- Legacy Capture Shots Section (browser-based) -->
+  <hr class="section-divider">
+  <h2>📸 Capture Shots (Legacy)</h2>
   
   <div class="capture-controls">
     <label>

@@ -10,7 +10,8 @@
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://api.airtable.com/*"
+    "https://api.airtable.com/*",
+    "http://127.0.0.1:*/*"
   ],
   "content_scripts": [
     {

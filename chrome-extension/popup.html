@@ -223,6 +223,13 @@
     <strong>Status:</strong> <span id="pipelineStep">Waiting...</span>
   </div>
 
+  <div id="resumeSection" class="hidden" style="margin-top:8px;">
+    <button id="resumePipelineBtn" style="background:#e65100;">
+      🔄 Resume Failed Pipeline
+    </button>
+    <div id="resumeInfo" style="font-size:11px;color:#666;margin-top:4px;"></div>
+  </div>
+
   <div id="serverOffline" class="status error hidden">
     Pipeline server not running. Start it with:<br>
     <code style="font-size:11px;">cd airtable-shots-db/pipeline-server && npm start</code>

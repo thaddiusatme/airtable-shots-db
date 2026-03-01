@@ -26,6 +26,9 @@ const pipelineMaxFramesInput = document.getElementById('pipelineMaxFrames');
 const pipelineStatusDiv = document.getElementById('pipelineStatus');
 const pipelineStepSpan = document.getElementById('pipelineStep');
 const serverOfflineDiv = document.getElementById('serverOffline');
+const resumeSection = document.getElementById('resumeSection');
+const resumePipelineBtn = document.getElementById('resumePipelineBtn');
+const resumeInfo = document.getElementById('resumeInfo');
 
 // DOM elements — Capture (Legacy)
 const captureIntervalInput = document.getElementById('captureInterval');
@@ -467,6 +470,64 @@ function resetPipelineUI() {
   }
 }
 
+// --- Resume Pipeline ---
+
+let resumableJob = null;
+
+async function checkResumable() {
+  try {
+    const res = await fetch(`${PIPELINE_SERVER}/pipeline/resumable`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return;
+    const list = await res.json();
+    if (list.length > 0) {
+      resumableJob = list[0];
+      resumeSection.classList.remove('hidden');
+      resumeInfo.textContent = `Video: ${resumableJob.videoId} — failed at '${resumableJob.failedStep}' (${resumableJob.completedSteps.length}/4 steps done)`;
+    } else {
+      resumableJob = null;
+      resumeSection.classList.add('hidden');
+    }
+  } catch (e) {
+    // Server not reachable — hide resume section
+    resumeSection.classList.add('hidden');
+  }
+}
+
+async function resumePipeline() {
+  if (!resumableJob) return;
+
+  resumePipelineBtn.disabled = true;
+  resumePipelineBtn.textContent = 'Resuming...';
+  pipelineStatusDiv.classList.remove('hidden');
+  pipelineStepSpan.textContent = 'Resuming pipeline...';
+
+  try {
+    const res = await fetch(`${PIPELINE_SERVER}/pipeline/resume/${resumableJob.runId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Resume failed');
+    }
+
+    const { runId } = await res.json();
+    pipelineRunId = runId;
+    showStatus(`Pipeline resuming (${runId.slice(0, 8)}...)`, 'info');
+    resumeSection.classList.add('hidden');
+    runPipelineBtn.disabled = true;
+    runPipelineBtn.textContent = 'Running...';
+
+    startPipelinePolling(runId);
+  } catch (error) {
+    showError(`Resume error: ${error.message}`);
+    resumePipelineBtn.disabled = false;
+    resumePipelineBtn.textContent = '🔄 Resume Failed Pipeline';
+    console.error('Resume error:', error);
+  }
+}
+
 // --- Capture Orchestration (Legacy) ---
 
 async function startCapture() {
@@ -576,6 +637,7 @@ settingsLink.addEventListener('click', (e) => {
   openSettings();
 });
 runPipelineBtn.addEventListener('click', runFullPipeline);
+resumePipelineBtn.addEventListener('click', resumePipeline);
 startCaptureBtn.addEventListener('click', startCapture);
 stopCaptureBtn.addEventListener('click', stopCapture);
 openFolderAnchor.addEventListener('click', (e) => {
@@ -595,9 +657,10 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   } else {
     showStatus('Ready! Click "Extract Transcript" or "Run Full Pipeline"', 'info');
     startCaptureBtn.disabled = false;
-    // Check server health to enable/disable pipeline button
+    // Check server health to enable/disable pipeline button, then check for resumable jobs
     checkServerHealth().then((ok) => {
       runPipelineBtn.disabled = !ok;
+      if (ok) checkResumable();
     });
   }
 });

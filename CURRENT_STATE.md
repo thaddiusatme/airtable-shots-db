@@ -2,7 +2,7 @@
 
 **Last Updated:** March 1, 2026  
 **Branch:** `feature/pipeline-resumption`  
-**Status:** Phase 3 Complete + Pipeline Server + Checkpoint Resumption (TDD Iteration 1)
+**Status:** Phase 3 Complete + Pipeline Server + Checkpoint Resumption + Resume API (TDD Iteration 2)
 
 ---
 
@@ -164,10 +164,12 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 | Publisher (CLI) | 8 | ✅ Passing |
 | Publisher (R2 uploader) | 18 | ✅ Passing |
 | Pipeline State (Node) | 15 | ✅ Passing |
-| **Total** | **166** | **✅ All Passing** |
+| Resume API (Node) | 9 | ✅ Passing |
+| **Total** | **175** | **✅ All Passing** |
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
-Pipeline state tests use `node:test` with temp directories (no external deps).
+Pipeline state tests use `node:test` with temp directories (no external deps).  
+Resume API tests use `node:test` + `http` with ephemeral Express server (no external deps).
 
 ---
 
@@ -240,14 +242,16 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
+| `238694a` | feat: add resume API endpoints and extension resume button (TDD iteration 2) |
+| `1535c0a` | docs: update NEXT_SESSION_PROMPT with TDD iteration 1 completion |
+| `7eaa9f7` | docs: update CURRENT_STATE with pipeline resumption progress and lessons |
 | `1065e8f` | feat: add checkpoint state persistence and capture resumption (TDD iteration 1) |
-| `87041a4` | feat: VLM bypass, pipeline server, chrome extension updates, docs |
 
 ---
 
 ## 📋 Known Issues & Gotchas
 
-### Pipeline Resumption (TDD Iteration 1 — March 1, 2026)
+### Pipeline Resumption (TDD Iterations 1–2 — March 1, 2026)
 
 - **`savePipelineState` auto-updates `updatedAt`:** Tests that assert a hardcoded `updatedAt` value will fail because the save function always stamps current time. Assert `notEqual` to the original value instead.
 - **Deep-clone INITIAL_PIPELINE_STATE:** Using `JSON.parse(JSON.stringify(...))` prevents mutation of the shared constant across multiple `createInitialState` calls.
@@ -255,6 +259,9 @@ airtable-shots-db/
 - **Capture failure saves partial progress:** The catch block in the capture step counts existing frames via `findExistingFrames` before re-throwing, so the state file accurately records `framesCompleted` even on crash.
 - **`node:test` is zero-dep and sufficient:** No need for Jest/Mocha for simple unit tests. Built-in `node:test` + `node:assert/strict` with temp dirs covers all pipeline state scenarios in 84ms.
 - **State file location matters:** Using `stateFilePath(capturesBase)` (the captures root) rather than per-video captureDir allows state tracking before the capture directory is created.
+- **`require.main === module` guard for testability:** Prevents `app.listen()` from running when server.js is imported by tests. Export `app` and `jobs` for direct test manipulation.
+- **`launchPipeline` helper eliminates duplication:** Both `/pipeline/run` and `/pipeline/resume/:runId` share identical updateStatus/error-handling logic — extracted to single function with label param.
+- **Resume filter requires `captureDir`:** Jobs that fail before capture starts have no `captureDir` and are excluded from resumable list (nothing to resume from).
 
 ### Airtable API
 - **Linked record formulas don't work with record IDs:** `{Video}='recXXX'` returns empty. Use reverse-link field instead.
@@ -282,8 +289,8 @@ airtable-shots-db/
 - [x] **Existing frame detection** (`findExistingFrames`, `calculateStartFrame`)
 - [x] **Step skipping on resume** (completed steps logged and skipped)
 - [x] **Partial capture recovery** (failed capture saves `framesCompleted` + `lastFrame`)
-- [ ] **Resume API endpoints** (`/pipeline/resumable`, `/pipeline/resume/:runId`)
-- [ ] **Extension resume button** (detect resumable jobs, show resume UI)
+- [x] **Resume API endpoints** (`GET /pipeline/resumable`, `POST /pipeline/resume/:runId`)
+- [x] **Extension resume button** (detect resumable jobs, show "🔄 Resume Failed Pipeline")
 - [ ] **End-to-end integration test** (Capture → Analyze → Publish on fresh video)
 
 ### P1 — Polish & Optimization

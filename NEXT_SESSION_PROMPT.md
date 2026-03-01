@@ -20,9 +20,15 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 - ✅ 15 unit tests passing (`node:test` + `node:assert/strict`, ~84ms)
 - ✅ `orchestrator.js` integrated: state load/save per step, skip completed steps, partial capture tracking on failure
 - ✅ Commits: `1065e8f` (feat: checkpoint state persistence), `7eaa9f7` (docs: lessons learned)
+- ✅ **TDD Iteration 2 complete** — Resume API endpoints + extension resume button
+- ✅ `GET /pipeline/resumable` and `POST /pipeline/resume/:runId` endpoints in `server.js`
+- ✅ `launchPipeline()` helper extracted to deduplicate /run and /resume routes
+- ✅ 9 new unit tests passing (`node:test` + `http`, ephemeral Express server)
+- ✅ "Resume Failed Pipeline" button in extension popup (auto-detects resumable jobs)
+- ✅ Commit: `238694a` (feat: resume API + extension resume button)
 
 **In progress:**
-- TDD Iteration 2 — Resume API endpoints and extension UI
+- TDD Iteration 2 — ✅ COMPLETE
 
 **Lessons from TDD Iteration 1 (March 1, 2026):**
 - `savePipelineState` auto-updates `updatedAt` — tests must assert `notEqual` to original, not a hardcoded value
@@ -66,17 +72,17 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 - ⬜ Add `--force-step <stepName>` CLI flag for manual step re-runs
 - ⬜ Implement step validation: analyze checks for valid analysis.json, publish checks Airtable records
 
-**Server API for Resumption:**
-- `GET /pipeline/resumable` — returns list of failed jobs with captureDir and completedSteps
-- `POST /pipeline/resume/:runId` — resets job status and calls runPipeline with state loading
-- Extension popup shows "Resume Last Failed Pipeline" if resumable jobs exist
-- Poll resumable endpoint on popup open, display resume button conditionally
+**Server API for Resumption:** ✅ DONE
+- ✅ `GET /pipeline/resumable` — returns list of failed jobs with captureDir and completedSteps
+- ✅ `POST /pipeline/resume/:runId` — resets job status and calls runPipeline with state loading
+- ✅ Extension popup shows "Resume Failed Pipeline" if resumable jobs exist
+- ✅ Poll resumable endpoint on popup open, display resume button conditionally
 
 ### Acceptance Criteria:
-- Completed steps are skipped on pipeline restart (logged: "Skipping analyze (already completed)")
-- Failed pipeline can be resumed via API endpoint with correct runId
-- Extension popup detects resumable jobs and shows resume button
-- Resume button triggers pipeline from last successful checkpoint
+- ✅ Completed steps are skipped on pipeline restart (logged: "Skipping analyze (already completed)")
+- ✅ Failed pipeline can be resumed via API endpoint with correct runId
+- ✅ Extension popup detects resumable jobs and shows resume button
+- ✅ Resume button triggers pipeline from last successful checkpoint
 
 ## P2 — Production Hardening (Future Improvements)
 
@@ -99,8 +105,8 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 - [Done] Implement checkpoint state schema and persistence helpers
 - [Done] Add capture resumption logic with existing frame detection
 - [Done] Implement step skipping based on state file (basic: skip completed steps)
-- [Pending] Create resume API endpoints (/resumable, /resume/:runId)
-- [Pending] Add "Resume Pipeline" button to extension popup
+- [Done] Create resume API endpoints (/resumable, /resume/:runId)
+- [Done] Add "Resume Pipeline" button to extension popup
 - [Pending] Step output validation before skipping (analysis.json, Airtable records)
 - [Pending] Write integration tests for full resumption flow
 
@@ -117,7 +123,7 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 - `calculateStartFrame` — returns 0 for empty, frame count for existing, handles 672 frames
 - `INITIAL_PIPELINE_STATE` — has all step keys, all start as `not_started`
 
-### Iteration 2: Resume API + Extension UI (NEXT)
+### Iteration 2: Resume API + Extension UI ✅ COMPLETE
 
 **Red Phase:**
 - `test_resumable_endpoint()` — GET /pipeline/resumable returns failed jobs with captureDir
@@ -136,11 +142,11 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 
 ## Next Action (for next session)
 
-1. **TDD Iteration 2 — Resume API endpoints** in `pipeline-server/server.js`
-2. **Write failing tests** for `GET /pipeline/resumable` and `POST /pipeline/resume/:runId`
-3. **Implement endpoints** with job filtering and state file loading
-4. **Extension UI** — Add "Resume Pipeline" button to `chrome-extension/popup.html` + `popup.js`
-5. **Manual test:** Start pipeline, kill mid-capture, use resume endpoint to continue
+1. **Manual end-to-end test:** Start pipeline, kill mid-capture, resume via extension button
+2. **Step output validation:** Check `analysis.json` exists before skipping analyze step
+3. **`--force-step` CLI flag:** Allow re-running specific steps on demand
+4. **Dashboard updates:** Show resumable jobs in `dashboard.html`
+5. **Integration tests:** Full resumption flow with mocked orchestrator
 
 ---
 
@@ -149,9 +155,9 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 **Core Implementation:**
 - `pipeline-server/pipeline-state.js` — ✅ State persistence helpers (save/load/find/calculate)
 - `pipeline-server/orchestrator.js` — ✅ Pipeline orchestration with state persistence integrated
-- `pipeline-server/server.js` — Add resume API endpoints (next iteration)
-- `chrome-extension/popup.js` — Add resume button and resumable job polling (next iteration)
-- `chrome-extension/popup.html` — Add resume button UI (next iteration)
+- `pipeline-server/server.js` — ✅ Resume API endpoints + launchPipeline helper + testable exports
+- `chrome-extension/popup.js` — ✅ Resume button + checkResumable polling + resumePipeline handler
+- `chrome-extension/popup.html` — ✅ Resume section with button and info text
 
 **Related Docs:**
 - `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` — Full implementation spec
@@ -160,7 +166,7 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 
 **Testing:**
 - `pipeline-server/test/test_pipeline_state.js` — ✅ 15 unit tests for state persistence
-- `pipeline-server/test/` — Add integration tests for resume API (next iteration)
+- `pipeline-server/test/test_resume_api.js` — ✅ 9 unit tests for resume API endpoints
 
 ## Session Outcomes
 
@@ -173,8 +179,15 @@ I'm following the guidance in `docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md` and TDD
 - ✅ Step skipping implemented (completed steps logged and skipped on resume)
 - ✅ Partial capture failure records `framesCompleted` + `lastFrame` for recovery
 
-**Expected outcomes for next session (TDD Iteration 2):**
-- Resume API endpoints functional (`/pipeline/resumable`, `/pipeline/resume/:runId`)
-- Extension popup shows "Resume Pipeline" button for failed jobs
-- Integration tests for resume flow
-- Git commit + lessons learned
+**TDD Iteration 2 (March 1, 2026) — COMPLETE:**
+- ✅ Resume API endpoints functional (`GET /pipeline/resumable`, `POST /pipeline/resume/:runId`)
+- ✅ Extension popup shows "Resume Failed Pipeline" button for failed jobs
+- ✅ 9 unit tests for resume API (node:test + http, ephemeral Express server)
+- ✅ `launchPipeline()` helper extracted to DRY /run and /resume routes
+- ✅ `require.main === module` guard for testability
+- ✅ Git commit: `238694a`
+
+**Expected outcomes for next session (TDD Iteration 3):**
+- Manual end-to-end test with mid-capture kill + resume
+- Step output validation before skipping
+- Dashboard UI updates for resumable jobs

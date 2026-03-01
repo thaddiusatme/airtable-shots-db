@@ -1,8 +1,8 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** February 27, 2026  
-**Branch:** `feature/merge-short-scenes`  
-**Status:** Phase 3 Complete + R2 Image Attachments + Transcript Segmentation + Scene Merger
+**Last Updated:** March 1, 2026  
+**Branch:** `feature/pipeline-resumption`  
+**Status:** Phase 3 Complete + Pipeline Server + Checkpoint Resumption (TDD Iteration 1)
 
 ---
 
@@ -163,9 +163,11 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 | Publisher (core) | 47 | ✅ Passing |
 | Publisher (CLI) | 8 | ✅ Passing |
 | Publisher (R2 uploader) | 18 | ✅ Passing |
-| **Total** | **151** | **✅ All Passing** |
+| Pipeline State (Node) | 15 | ✅ Passing |
+| **Total** | **166** | **✅ All Passing** |
 
-All tests use mocked external APIs (Ollama, Airtable, boto3/R2).
+All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
+Pipeline state tests use `node:test` with temp directories (no external deps).
 
 ---
 
@@ -192,7 +194,15 @@ airtable-shots-db/
 │   ├── test_r2_uploader.py
 │   ├── test_scene_detector.py
 │   └── test_vlm_describer.py
-├── chrome-extension/       # Manual transcript capture (legacy)
+├── pipeline-server/
+│   ├── orchestrator.js     # Pipeline orchestration + state persistence
+│   ├── server.js           # Express API server
+│   ├── pipeline-state.js   # Checkpoint state helpers (save/load/find)
+│   ├── dashboard.html      # Web dashboard
+│   ├── package.json        # Node dependencies + test script
+│   └── test/
+│       └── test_pipeline_state.js  # 15 unit tests
+├── chrome-extension/       # Pipeline trigger + transcript capture
 ├── .env                    # Credentials (gitignored)
 ├── requirements.txt        # Python dependencies
 ├── jest.config.js
@@ -226,18 +236,25 @@ airtable-shots-db/
 
 ---
 
-## 🎯 Recent Commits (feature/airtable-publisher)
+## 🎯 Recent Commits (feature/pipeline-resumption)
 
 | Hash | Description |
 |---|---|
-| `89c8f32` | Refactor to 1 Shot record per scene + Transcript fields |
-| `40bc593` | Update image issue for 1-record-per-scene model |
-| `fcd6eb7` | Add R2 image uploader + integrate into publisher |
-| `0470b65` | Revert accidental paste in issue file |
+| `1065e8f` | feat: add checkpoint state persistence and capture resumption (TDD iteration 1) |
+| `87041a4` | feat: VLM bypass, pipeline server, chrome extension updates, docs |
 
 ---
 
 ## 📋 Known Issues & Gotchas
+
+### Pipeline Resumption (TDD Iteration 1 — March 1, 2026)
+
+- **`savePipelineState` auto-updates `updatedAt`:** Tests that assert a hardcoded `updatedAt` value will fail because the save function always stamps current time. Assert `notEqual` to the original value instead.
+- **Deep-clone INITIAL_PIPELINE_STATE:** Using `JSON.parse(JSON.stringify(...))` prevents mutation of the shared constant across multiple `createInitialState` calls.
+- **Corrupted JSON graceful recovery:** `loadPipelineState` falls back to initial state on parse errors — critical for production resilience when process is killed mid-write.
+- **Capture failure saves partial progress:** The catch block in the capture step counts existing frames via `findExistingFrames` before re-throwing, so the state file accurately records `framesCompleted` even on crash.
+- **`node:test` is zero-dep and sufficient:** No need for Jest/Mocha for simple unit tests. Built-in `node:test` + `node:assert/strict` with temp dirs covers all pipeline state scenarios in 84ms.
+- **State file location matters:** Using `stateFilePath(capturesBase)` (the captures root) rather than per-video captureDir allows state tracking before the capture directory is created.
 
 ### Airtable API
 - **Linked record formulas don't work with record IDs:** `{Video}='recXXX'` returns empty. Use reverse-link field instead.
@@ -259,15 +276,21 @@ airtable-shots-db/
 ### P0 — Core Functionality
 - [x] Phase 3: Airtable Publisher (metadata)
 - [x] R2 Image Uploads (Scene Start/End attachments)
+- [x] Pipeline Server (Express orchestrator + Chrome extension trigger)
+- [x] VLM Bypass (`--skip-vlm` flag end-to-end)
+- [x] **Checkpoint state persistence** (`.pipeline_state.json` save/load)
+- [x] **Existing frame detection** (`findExistingFrames`, `calculateStartFrame`)
+- [x] **Step skipping on resume** (completed steps logged and skipped)
+- [x] **Partial capture recovery** (failed capture saves `framesCompleted` + `lastFrame`)
+- [ ] **Resume API endpoints** (`/pipeline/resumable`, `/pipeline/resume/:runId`)
+- [ ] **Extension resume button** (detect resumable jobs, show resume UI)
 - [ ] **End-to-end integration test** (Capture → Analyze → Publish on fresh video)
-- [ ] **Populate Video metadata** (Title, Channel, Duration from manifest.json)
-- [ ] **Error handling & retry logic** (Airtable rate limits, R2 upload failures)
 
 ### P1 — Polish & Optimization
+- [ ] **Step output validation** (check `analysis.json` exists before skipping analyze)
+- [ ] **`--force-step` CLI flag** (re-run specific steps on demand)
 - [ ] **Idempotent R2 uploads** (HEAD request before upload, skip if exists)
-- [ ] **R2 cleanup on re-publish** (delete old frames when Shot records deleted)
 - [ ] **Thumbnail generation** (resize frames to 640px before upload, save bandwidth)
-- [ ] **Progress bars** for multi-frame uploads (tqdm)
 - [ ] **Logging improvements** (structured JSON logs, log levels)
 
 ### P2 — Advanced Features

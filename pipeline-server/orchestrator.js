@@ -2,6 +2,14 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+const {
+  savePipelineState,
+  loadPipelineState,
+  findExistingFrames,
+  calculateStartFrame,
+  stateFilePath,
+} = require('./pipeline-state');
+
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 /**
@@ -171,80 +179,194 @@ async function runPipeline(job, updateStatus) {
 
   fs.mkdirSync(capturesBase, { recursive: true });
 
-  // Step 1: Upsert Video transcript
-  updateStatus('running', 'Saving transcript to Airtable...', 'upsert_video');
-  await upsertVideoTranscript(job);
+  // Load or create pipeline state for resumption
+  const stateFile = stateFilePath(capturesBase);
+  const state = loadPipelineState(stateFile, job.runId);
+  state.videoId = videoId;
   job.completedSteps = job.completedSteps || [];
-  job.completedSteps.push('upsert_video');
 
-  // Step 2: Capture frames
-  updateStatus('running', 'Capturing frames via Playwright...', 'capture');
-  const interval = capture?.interval || 1;
-  const captureArgs = [
-    'src/index.ts',
-    `"${videoUrl}"`,
-    String(interval),
-    '--output', capturesBase,
-  ];
-  if (capture?.start !== undefined) captureArgs.push('--start', String(capture.start));
-  if (capture?.end !== undefined) captureArgs.push('--end', String(capture.end));
-  if (capture?.maxFrames !== undefined) captureArgs.push('--max-frames', String(capture.maxFrames));
+  console.log(`[orchestrator] Pipeline state loaded (status: ${state.status}, runId: ${state.runId})`);
 
-  await runCommand('npx', ['ts-node', ...captureArgs], {
-    cwd: ytFramePocPath,
-    onStdout: (chunk) => console.log(`[capture] ${chunk.trimEnd()}`),
-    onStderr: (chunk) => console.error(`[capture] ${chunk.trimEnd()}`),
-  });
-
-  // Find the capture directory
-  const captureDir = findCaptureDir(capturesBase, videoId);
-  if (!captureDir) {
-    throw new Error(`Capture directory not found in ${capturesBase} for ${videoId}`);
-  }
-  job.captureDir = captureDir;
-  job.completedSteps.push('capture');
-  console.log(`[orchestrator] Capture dir: ${captureDir}`);
-
-  // Step 3: Analyze scenes
-  const analyzerArgs = [
-    '-m', 'analyzer',
-    '--capture-dir', captureDir,
-    '--threshold', '10.0',
-    '--verbose',
-  ];
-  
-  if (job.input.skipVlm) {
-    analyzerArgs.push('--skip-vlm');
-    updateStatus('running', 'Analyzing scenes (OpenCV only, VLM skipped)...', 'analyze');
+  // --- Step 1: Upsert Video transcript ---
+  if (state.stepStates.upsert_video.status === 'completed') {
+    console.log('[orchestrator] Skipping upsert_video (already completed)');
+    if (!job.completedSteps.includes('upsert_video')) job.completedSteps.push('upsert_video');
   } else {
-    updateStatus('running', 'Analyzing scenes (OpenCV + VLM)...', 'analyze');
+    updateStatus('running', 'Saving transcript to Airtable...', 'upsert_video');
+    state.stepStates.upsert_video.status = 'running';
+    state.stepStates.upsert_video.startedAt = new Date().toISOString();
+    savePipelineState(stateFile, state);
+
+    try {
+      await upsertVideoTranscript(job);
+      state.stepStates.upsert_video.status = 'completed';
+      state.stepStates.upsert_video.completedAt = new Date().toISOString();
+      savePipelineState(stateFile, state);
+      job.completedSteps.push('upsert_video');
+    } catch (err) {
+      state.stepStates.upsert_video.status = 'failed';
+      state.stepStates.upsert_video.error = err.message;
+      state.status = 'failed';
+      savePipelineState(stateFile, state);
+      throw err;
+    }
   }
-  
-  await runCommand(pythonBin, analyzerArgs, {
-    cwd: PROJECT_ROOT,
-    onStdout: (chunk) => console.log(`[analyzer] ${chunk.trimEnd()}`),
-    onStderr: (chunk) => console.error(`[analyzer] ${chunk.trimEnd()}`),
-  });
 
-  job.completedSteps.push('analyze');
+  // --- Step 2: Capture frames ---
+  let captureDir;
+  if (state.stepStates.capture.status === 'completed') {
+    console.log('[orchestrator] Skipping capture (already completed)');
+    captureDir = job.captureDir || findCaptureDir(capturesBase, videoId);
+    if (!job.completedSteps.includes('capture')) job.completedSteps.push('capture');
+  } else {
+    // Check for existing frames (resumption)
+    const existingCaptureDir = findCaptureDir(capturesBase, videoId);
+    const existingFrames = existingCaptureDir ? findExistingFrames(existingCaptureDir) : [];
+    const startFrame = calculateStartFrame(existingFrames);
 
-  // Step 4: Publish to Airtable + R2
-  updateStatus('running', 'Publishing shots to Airtable + R2...', 'publish');
-  await runCommand(pythonBin, [
-    '-m', 'publisher',
-    '--capture-dir', captureDir,
-    '--api-key', process.env.AIRTABLE_API_KEY,
-    '--base-id', process.env.AIRTABLE_BASE_ID,
-    '--segment-transcripts',
-    '--merge-scenes',
-    '--verbose',
-  ], {
-    cwd: PROJECT_ROOT,
-    onStdout: (chunk) => console.log(`[publisher] ${chunk.trimEnd()}`),
-    onStderr: (chunk) => console.error(`[publisher] ${chunk.trimEnd()}`),
-  });
+    if (startFrame > 0) {
+      console.log(`[orchestrator] Resuming capture from frame ${startFrame} (${existingFrames.length} existing frames)`);
+      updateStatus('running', `Resuming capture from frame ${startFrame}...`, 'capture');
+    } else {
+      updateStatus('running', 'Capturing frames via Playwright...', 'capture');
+    }
 
-  job.completedSteps.push('publish');
+    state.stepStates.capture.status = 'running';
+    state.stepStates.capture.startedAt = new Date().toISOString();
+    state.stepStates.capture.framesCompleted = startFrame;
+    savePipelineState(stateFile, state);
+
+    const interval = capture?.interval || 1;
+    const captureArgs = [
+      'src/index.ts',
+      `"${videoUrl}"`,
+      String(interval),
+      '--output', capturesBase,
+    ];
+    if (capture?.start !== undefined) captureArgs.push('--start', String(capture.start));
+    if (capture?.end !== undefined) captureArgs.push('--end', String(capture.end));
+    if (capture?.maxFrames !== undefined) captureArgs.push('--max-frames', String(capture.maxFrames));
+    if (startFrame > 0) captureArgs.push('--start-frame', String(startFrame));
+
+    try {
+      await runCommand('npx', ['ts-node', ...captureArgs], {
+        cwd: ytFramePocPath,
+        onStdout: (chunk) => console.log(`[capture] ${chunk.trimEnd()}`),
+        onStderr: (chunk) => console.error(`[capture] ${chunk.trimEnd()}`),
+      });
+    } catch (err) {
+      // Save partial progress before re-throwing
+      const partialDir = findCaptureDir(capturesBase, videoId);
+      const partialFrames = partialDir ? findExistingFrames(partialDir) : [];
+      state.stepStates.capture.status = 'failed';
+      state.stepStates.capture.failedAt = new Date().toISOString();
+      state.stepStates.capture.error = err.message;
+      state.stepStates.capture.framesCompleted = partialFrames.length;
+      state.stepStates.capture.lastFrame = partialFrames[partialFrames.length - 1] || null;
+      state.status = 'failed';
+      savePipelineState(stateFile, state);
+      throw err;
+    }
+
+    captureDir = findCaptureDir(capturesBase, videoId);
+    if (!captureDir) {
+      throw new Error(`Capture directory not found in ${capturesBase} for ${videoId}`);
+    }
+    job.captureDir = captureDir;
+
+    const finalFrames = findExistingFrames(captureDir);
+    state.stepStates.capture.status = 'completed';
+    state.stepStates.capture.completedAt = new Date().toISOString();
+    state.stepStates.capture.framesCompleted = finalFrames.length;
+    state.stepStates.capture.lastFrame = finalFrames[finalFrames.length - 1] || null;
+    savePipelineState(stateFile, state);
+    job.completedSteps.push('capture');
+    console.log(`[orchestrator] Capture dir: ${captureDir} (${finalFrames.length} frames)`);
+  }
+
+  // --- Step 3: Analyze scenes ---
+  if (state.stepStates.analyze.status === 'completed') {
+    console.log('[orchestrator] Skipping analyze (already completed)');
+    if (!job.completedSteps.includes('analyze')) job.completedSteps.push('analyze');
+  } else {
+    const analyzerArgs = [
+      '-m', 'analyzer',
+      '--capture-dir', captureDir,
+      '--threshold', '10.0',
+      '--verbose',
+    ];
+    
+    if (job.input.skipVlm) {
+      analyzerArgs.push('--skip-vlm');
+      updateStatus('running', 'Analyzing scenes (OpenCV only, VLM skipped)...', 'analyze');
+    } else {
+      updateStatus('running', 'Analyzing scenes (OpenCV + VLM)...', 'analyze');
+    }
+
+    state.stepStates.analyze.status = 'running';
+    state.stepStates.analyze.startedAt = new Date().toISOString();
+    savePipelineState(stateFile, state);
+
+    try {
+      await runCommand(pythonBin, analyzerArgs, {
+        cwd: PROJECT_ROOT,
+        onStdout: (chunk) => console.log(`[analyzer] ${chunk.trimEnd()}`),
+        onStderr: (chunk) => console.error(`[analyzer] ${chunk.trimEnd()}`),
+      });
+      state.stepStates.analyze.status = 'completed';
+      state.stepStates.analyze.completedAt = new Date().toISOString();
+      savePipelineState(stateFile, state);
+      job.completedSteps.push('analyze');
+    } catch (err) {
+      state.stepStates.analyze.status = 'failed';
+      state.stepStates.analyze.error = err.message;
+      state.status = 'failed';
+      savePipelineState(stateFile, state);
+      throw err;
+    }
+  }
+
+  // --- Step 4: Publish to Airtable + R2 ---
+  if (state.stepStates.publish.status === 'completed') {
+    console.log('[orchestrator] Skipping publish (already completed)');
+    if (!job.completedSteps.includes('publish')) job.completedSteps.push('publish');
+  } else {
+    updateStatus('running', 'Publishing shots to Airtable + R2...', 'publish');
+
+    state.stepStates.publish.status = 'running';
+    state.stepStates.publish.startedAt = new Date().toISOString();
+    savePipelineState(stateFile, state);
+
+    try {
+      await runCommand(pythonBin, [
+        '-m', 'publisher',
+        '--capture-dir', captureDir,
+        '--api-key', process.env.AIRTABLE_API_KEY,
+        '--base-id', process.env.AIRTABLE_BASE_ID,
+        '--segment-transcripts',
+        '--merge-scenes',
+        '--verbose',
+      ], {
+        cwd: PROJECT_ROOT,
+        onStdout: (chunk) => console.log(`[publisher] ${chunk.trimEnd()}`),
+        onStderr: (chunk) => console.error(`[publisher] ${chunk.trimEnd()}`),
+      });
+      state.stepStates.publish.status = 'completed';
+      state.stepStates.publish.completedAt = new Date().toISOString();
+      savePipelineState(stateFile, state);
+      job.completedSteps.push('publish');
+    } catch (err) {
+      state.stepStates.publish.status = 'failed';
+      state.stepStates.publish.error = err.message;
+      state.status = 'failed';
+      savePipelineState(stateFile, state);
+      throw err;
+    }
+  }
+
+  // Mark overall pipeline as completed
+  state.status = 'completed';
+  savePipelineState(stateFile, state);
 
   return { captureDir };
 }

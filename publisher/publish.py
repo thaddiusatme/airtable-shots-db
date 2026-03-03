@@ -158,6 +158,61 @@ def build_shot_records(
     return shots
 
 
+def build_frame_records(
+    analysis: dict[str, Any],
+    video_record_id: str,
+    shot_records: list[dict[str, Any]],
+    r2_url_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Build list of Frame record field dicts from analysis.
+
+    For each shot's time range [startTimestamp, endTimestamp], generates one
+    Frame record per integer second. Each frame is linked to its parent Shot
+    and Video records.
+
+    Args:
+        analysis: Parsed analysis dict with scenes.
+        video_record_id: Airtable record ID for the parent Video.
+        shot_records: List of created Shot record dicts (with "id" keys),
+            in the same order as analysis["scenes"].
+        r2_url_map: Dict mapping frame filename → R2 public URL.
+
+    Returns:
+        List of field dicts ready for Airtable batch_create on the Frames table.
+    """
+    video_id = analysis["videoId"]
+    scenes = analysis.get("scenes", [])
+    frames: list[dict[str, Any]] = []
+
+    for i, scene in enumerate(scenes):
+        shot_record_id = shot_records[i]["id"] if i < len(shot_records) else None
+        start = int(scene["startTimestamp"])
+        end = int(scene["endTimestamp"])
+
+        for ts in range(start, end + 1):
+            frame_key = f"{video_id}_t{ts:06d}"
+            filename = f"frame_{ts:05d}_t{ts:03d}.000s.png"
+
+            record: dict[str, Any] = {
+                "Frame Key": frame_key,
+                "Video": [video_record_id],
+                "Timestamp (sec)": ts,
+                "Timestamp (hh:mm:ss)": format_timestamp_hms(ts),
+                "Source Filename": filename,
+            }
+
+            if shot_record_id:
+                record["Shot"] = [shot_record_id]
+
+            url = r2_url_map.get(filename)
+            if url:
+                record["Frame Image"] = [{"url": url}]
+
+            frames.append(record)
+
+    return frames
+
+
 def publish_to_airtable(
     capture_dir: str,
     api_key: str,

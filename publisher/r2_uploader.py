@@ -145,6 +145,38 @@ def upload_scene_frames(
     return url_map
 
 
+def upload_all_frames(
+    s3_client,
+    config: R2Config,
+    capture_dir: str,
+    video_id: str,
+    frame_filenames: list[str],
+) -> dict[str, str]:
+    """Upload all frame PNGs to R2 (not just scene boundaries).
+
+    Deduplicates filenames before uploading.
+
+    Args:
+        s3_client: boto3 S3 client.
+        config: R2 configuration.
+        capture_dir: Path to the capture directory.
+        video_id: YouTube video ID (used as object key prefix).
+        frame_filenames: List of frame filenames to upload.
+
+    Returns:
+        Dict mapping filename → public URL for all uploaded frames.
+    """
+    unique_filenames = sorted(set(frame_filenames))
+
+    url_map: dict[str, str] = {}
+    for filename in unique_filenames:
+        url = upload_frame(s3_client, config, capture_dir, video_id, filename)
+        url_map[filename] = url
+
+    logger.info("Uploaded %d frames to R2 (all frames)", len(url_map))
+    return url_map
+
+
 def build_attachment_urls(
     analysis: dict[str, Any],
     url_map: dict[str, str],

@@ -18,6 +18,7 @@ import pytest
 
 from publisher.publish import (
     PublisherError,
+    build_frame_records,
     build_shot_records,
     build_video_fields,
     format_timestamp_hms,
@@ -284,6 +285,146 @@ class TestBuildShotRecords:
         }
         for shot in result:
             assert set(shot.keys()) == valid_fields
+
+
+# ---------------------------------------------------------------------------
+# build_frame_records tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFrameRecords:
+    """Tests for build_frame_records() — generates Frame record dicts."""
+
+    SHOT_RECORDS = [
+        {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+        {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+        {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+    ]
+
+    R2_URL_MAP = {
+        "frame_00000_t000.000s.png": "https://r2.dev/vid/frame_00000_t000.000s.png",
+        "frame_00001_t001.000s.png": "https://r2.dev/vid/frame_00001_t001.000s.png",
+        "frame_00002_t002.000s.png": "https://r2.dev/vid/frame_00002_t002.000s.png",
+        "frame_00019_t019.000s.png": "https://r2.dev/vid/frame_00019_t019.000s.png",
+        "frame_00020_t020.000s.png": "https://r2.dev/vid/frame_00020_t020.000s.png",
+        "frame_00021_t021.000s.png": "https://r2.dev/vid/frame_00021_t021.000s.png",
+        "frame_00076_t076.000s.png": "https://r2.dev/vid/frame_00076_t076.000s.png",
+        "frame_00077_t077.000s.png": "https://r2.dev/vid/frame_00077_t077.000s.png",
+        "frame_00078_t078.000s.png": "https://r2.dev/vid/frame_00078_t078.000s.png",
+        "frame_00129_t129.000s.png": "https://r2.dev/vid/frame_00129_t129.000s.png",
+        "frame_00130_t130.000s.png": "https://r2.dev/vid/frame_00130_t130.000s.png",
+    }
+
+    def test_returns_list(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        assert isinstance(result, list)
+
+    def test_frame_count_matches_time_ranges(self, analysis: dict):
+        """Each integer second in a shot's range produces one frame record."""
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        # Scene 0: 0-20 = 21 seconds, Scene 1: 21-77 = 57 seconds, Scene 2: 78-130 = 53 seconds
+        # Total: 131 frames (0 through 130 inclusive)
+        assert len(result) == 131
+
+    def test_frame_key_format(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        first = result[0]
+        assert first["Frame Key"] == "KGHoVptow30_t000000"
+
+    def test_frame_key_increments(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        assert result[0]["Frame Key"] == "KGHoVptow30_t000000"
+        assert result[1]["Frame Key"] == "KGHoVptow30_t000001"
+        assert result[20]["Frame Key"] == "KGHoVptow30_t000020"
+
+    def test_video_linked(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        for frame in result:
+            assert frame["Video"] == ["recVID1"]
+
+    def test_shot_linked_to_correct_record(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        # Frame at t=0 belongs to Shot 1 (scene 0)
+        assert result[0]["Shot"] == ["recSHOT1"]
+        # Frame at t=21 belongs to Shot 2 (scene 1)
+        assert result[21]["Shot"] == ["recSHOT2"]
+        # Frame at t=78 belongs to Shot 3 (scene 2)
+        assert result[78]["Shot"] == ["recSHOT3"]
+
+    def test_timestamp_sec_field(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        assert result[0]["Timestamp (sec)"] == 0
+        assert result[5]["Timestamp (sec)"] == 5
+        assert result[130]["Timestamp (sec)"] == 130
+
+    def test_timestamp_hms_field(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        assert result[0]["Timestamp (hh:mm:ss)"] == "0:00:00"
+        assert result[65]["Timestamp (hh:mm:ss)"] == "0:01:05"
+        assert result[130]["Timestamp (hh:mm:ss)"] == "0:02:10"
+
+    def test_frame_image_attachment_when_url_exists(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        # Frame at t=0 has a URL in the map
+        assert result[0]["Frame Image"] == [
+            {"url": "https://r2.dev/vid/frame_00000_t000.000s.png"}
+        ]
+
+    def test_frame_image_empty_when_url_missing(self, analysis: dict):
+        """Frames without R2 URLs should have no Frame Image attachment."""
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        # Frame at t=5 is NOT in the R2 url map
+        assert "Frame Image" not in result[5] or result[5]["Frame Image"] is None
+
+    def test_source_filename_field(self, analysis: dict):
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+        # Source filename follows the pattern frame_XXXXX_tSSS.MMMMs.png
+        assert result[0]["Source Filename"] == "frame_00000_t000.000s.png"
+
+    def test_empty_scenes_returns_empty(self, analysis: dict):
+        analysis["scenes"] = []
+        result = build_frame_records(analysis, "recVID1", [], {})
+        assert result == []
+
+    def test_single_second_scene(self, analysis: dict):
+        """A scene spanning 1 second (start==end) produces 1 frame."""
+        analysis["scenes"] = [
+            {
+                "sceneIndex": 0,
+                "startTimestamp": 5.0,
+                "endTimestamp": 5.0,
+                "firstFrame": "frame_00005_t005.000s.png",
+                "lastFrame": "frame_00005_t005.000s.png",
+                "description": "Single frame scene",
+                "transition": "cut",
+            }
+        ]
+        shot_records = [{"id": "recS1", "fields": {"Shot Label": "S01"}}]
+        result = build_frame_records(analysis, "recVID1", shot_records, {})
+        assert len(result) == 1
+        assert result[0]["Timestamp (sec)"] == 5
 
 
 # ---------------------------------------------------------------------------

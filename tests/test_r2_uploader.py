@@ -17,10 +17,11 @@ import pytest
 from publisher.r2_uploader import (
     R2Config,
     R2UploadError,
+    build_attachment_urls,
     create_s3_client,
+    upload_all_frames,
     upload_frame,
     upload_scene_frames,
-    build_attachment_urls,
 )
 
 
@@ -356,3 +357,123 @@ class TestBuildAttachmentUrls:
         analysis["scenes"] = []
         result = build_attachment_urls(analysis, {})
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# upload_all_frames tests
+# ---------------------------------------------------------------------------
+
+
+class TestUploadAllFrames:
+    """Tests for upload_all_frames() — uploads all frame PNGs (not just boundaries)."""
+
+    FRAME_FILENAMES = [
+        "frame_00000_t000.000s.png",
+        "frame_00001_t001.000s.png",
+        "frame_00002_t002.000s.png",
+        "frame_00003_t003.000s.png",
+        "frame_00004_t004.000s.png",
+    ]
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_uploads_all_filenames(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        mock_upload.return_value = "https://r2.dev/fake.png"
+        mock_client = MagicMock()
+
+        upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=self.FRAME_FILENAMES,
+        )
+
+        assert mock_upload.call_count == 5
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_returns_filename_to_url_mapping(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        def fake_upload(s3_client, config, capture_dir, video_id, filename):
+            return f"https://r2.dev/{video_id}/{filename}"
+
+        mock_upload.side_effect = fake_upload
+        mock_client = MagicMock()
+
+        result = upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=self.FRAME_FILENAMES,
+        )
+
+        assert isinstance(result, dict)
+        assert len(result) == 5
+        assert result["frame_00000_t000.000s.png"] == (
+            "https://r2.dev/KGHoVptow30/frame_00000_t000.000s.png"
+        )
+        assert result["frame_00004_t004.000s.png"] == (
+            "https://r2.dev/KGHoVptow30/frame_00004_t004.000s.png"
+        )
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_deduplicates_filenames(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        """Duplicate filenames in the list should only be uploaded once."""
+        mock_upload.return_value = "https://r2.dev/fake.png"
+        mock_client = MagicMock()
+
+        duped_filenames = [
+            "frame_00000_t000.000s.png",
+            "frame_00001_t001.000s.png",
+            "frame_00000_t000.000s.png",  # duplicate
+        ]
+
+        result = upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=duped_filenames,
+        )
+
+        assert mock_upload.call_count == 2
+        assert len(result) == 2
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_empty_filenames_returns_empty(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        mock_client = MagicMock()
+
+        result = upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=[],
+        )
+
+        assert result == {}
+        mock_upload.assert_not_called()
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_propagates_upload_error(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        """If a frame upload fails, the error should propagate."""
+        mock_upload.side_effect = R2UploadError("Connection refused")
+        mock_client = MagicMock()
+
+        with pytest.raises(R2UploadError, match="Connection refused"):
+            upload_all_frames(
+                s3_client=mock_client,
+                config=r2_config,
+                capture_dir=str(capture_dir),
+                video_id="KGHoVptow30",
+                frame_filenames=["frame_00000_t000.000s.png"],
+            )

@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,7 @@ def upload_all_frames(
     capture_dir: str,
     video_id: str,
     frame_filenames: list[str],
+    max_workers: int = 1,
 ) -> dict[str, str]:
     """Upload all frame PNGs to R2 (not just scene boundaries).
 
@@ -162,6 +164,7 @@ def upload_all_frames(
         capture_dir: Path to the capture directory.
         video_id: YouTube video ID (used as object key prefix).
         frame_filenames: List of frame filenames to upload.
+        max_workers: Max concurrent upload threads (default: 1 = sequential).
 
     Returns:
         Dict mapping filename → public URL for all uploaded frames.
@@ -169,9 +172,23 @@ def upload_all_frames(
     unique_filenames = sorted(set(frame_filenames))
 
     url_map: dict[str, str] = {}
-    for filename in unique_filenames:
-        url = upload_frame(s3_client, config, capture_dir, video_id, filename)
-        url_map[filename] = url
+
+    if max_workers == 1:
+        # Sequential uploads (default)
+        for filename in unique_filenames:
+            url = upload_frame(s3_client, config, capture_dir, video_id, filename)
+            url_map[filename] = url
+    else:
+        # Parallel uploads with ThreadPoolExecutor
+        def upload_one(filename: str) -> tuple[str, str]:
+            url = upload_frame(s3_client, config, capture_dir, video_id, filename)
+            return filename, url
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(upload_one, fn): fn for fn in unique_filenames}
+            for future in as_completed(futures):
+                filename, url = future.result()
+                url_map[filename] = url
 
     logger.info("Uploaded %d frames to R2 (all frames)", len(url_map))
     return url_map

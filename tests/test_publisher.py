@@ -409,7 +409,7 @@ class TestBuildFrameRecords:
         assert result == []
 
     def test_single_second_scene(self, analysis: dict):
-        """A scene spanning 1 second (start==end) produces 1 frame."""
+        """Scene lasting exactly 1 second should produce 1 frame."""
         analysis["scenes"] = [
             {
                 "sceneIndex": 0,
@@ -417,15 +417,61 @@ class TestBuildFrameRecords:
                 "endTimestamp": 5.0,
                 "firstFrame": "frame_00005_t005.000s.png",
                 "lastFrame": "frame_00005_t005.000s.png",
-                "description": "Single frame scene",
-                "transition": "cut",
             }
         ]
-        shot_records = [{"id": "recS1", "fields": {"Shot Label": "S01"}}]
-        result = build_frame_records(analysis, "recVID1", shot_records, {})
-        assert len(result) == 1
-        assert result[0]["Timestamp (sec)"] == 5
 
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS[:1], self.R2_URL_MAP
+        )
+
+        assert len(result) == 1
+        assert result[0]["Frame Key"] == "KGHoVptow30_t000005"
+
+    def test_frame_sampling_every_2_seconds(self, analysis: dict):
+        """With sample_rate=2, should create frames for even seconds only."""
+        result = build_frame_records(
+            analysis,
+            "recVID1",
+            self.SHOT_RECORDS,
+            self.R2_URL_MAP,
+            sample_rate=2,
+        )
+
+        # Scene 0: 0-20s → 0,2,4,6,8,10,12,14,16,18,20 = 11 frames
+        # Scene 1: 21-100s → 21,23,25,...,99 = 40 frames
+        # Scene 2: 100-130s → 100,102,104,...,130 = 16 frames
+        # Total: 11 + 40 + 16 = 67 frames
+        assert len(result) == 67
+
+        # Check first few timestamps follow sample_rate=2
+        assert result[0]["Timestamp (sec)"] == 0
+        assert result[1]["Timestamp (sec)"] == 2
+        assert result[2]["Timestamp (sec)"] == 4
+
+    def test_frame_sampling_every_5_seconds(self, analysis: dict):
+        """With sample_rate=5, should create frames every 5 seconds."""
+        result = build_frame_records(
+            analysis,
+            "recVID1",
+            self.SHOT_RECORDS,
+            self.R2_URL_MAP,
+            sample_rate=5,
+        )
+
+        # Scene 0: 0-20s → 0,5,10,15,20 = 5 frames
+        # Scene 1: 21-100s → 21,26,31,...,96 = 16 frames
+        # Scene 2: 100-130s → 100,105,110,115,120,125,130 = 7 frames
+        # Total: 5 + 16 + 7 = 28 frames
+        assert len(result) == 28
+
+    def test_default_sample_rate_is_1(self, analysis: dict):
+        """Without sample_rate param, should default to every second."""
+        result = build_frame_records(
+            analysis, "recVID1", self.SHOT_RECORDS, self.R2_URL_MAP
+        )
+
+        # Default should be same as sample_rate=1
+        assert len(result) == 131
 
 # ---------------------------------------------------------------------------
 # publish_to_airtable tests (mocked pyairtable)

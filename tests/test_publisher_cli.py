@@ -155,3 +155,59 @@ class TestPublisherCLI:
             "--skip-frames",
         ])
         assert rc == 0
+
+    @patch("publisher.publish.Api")
+    def test_max_concurrent_uploads_flag_accepted(self, mock_api_cls, analysis_dir: Path):
+        """CLI should accept --max-concurrent-uploads flag."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recNEW", "fields": {}}
+        mock_shots.batch_create.return_value = [{"id": "recS1"}]
+
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--max-concurrent-uploads", "8",
+        ])
+        assert rc == 0
+
+    @patch("publisher.publish.Api")
+    def test_frame_sampling_flag_accepted(self, mock_api_cls, analysis_dir: Path):
+        """CLI should accept --frame-sampling flag."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recNEW", "fields": {}}
+        mock_shots.batch_create.return_value = [{"id": "recS1"}]
+
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--frame-sampling", "5",
+        ])
+        assert rc == 0

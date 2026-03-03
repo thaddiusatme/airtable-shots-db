@@ -78,6 +78,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip Frame record creation (metadata-only publish without per-second frames).",
     )
     parser.add_argument(
+        "--max-concurrent-uploads",
+        type=int,
+        default=1,
+        help="Max concurrent frame uploads (default: 1 = sequential). Use 4-8 for faster uploads.",
+    )
+    parser.add_argument(
+        "--frame-sampling",
+        type=int,
+        default=1,
+        help="Create frames every N seconds (default: 1 = every second). Use 5 or 10 to reduce density.",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         default=False,
@@ -137,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             merge_scenes=args.merge_scenes,
             min_scene_duration=args.min_scene_duration,
             skip_frames=args.skip_frames,
+            max_workers=args.max_concurrent_uploads,
+            frame_sample_rate=args.frame_sampling,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

@@ -164,11 +164,12 @@ def build_frame_records(
     video_record_id: str,
     shot_records: list[dict[str, Any]],
     r2_url_map: dict[str, str],
+    sample_rate: int = 1,
 ) -> list[dict[str, Any]]:
     """Build list of Frame record field dicts from analysis.
 
     For each shot's time range [startTimestamp, endTimestamp], generates one
-    Frame record per integer second. Each frame is linked to its parent Shot
+    Frame record per sample_rate seconds. Each frame is linked to its parent Shot
     and Video records.
 
     Args:
@@ -177,21 +178,27 @@ def build_frame_records(
         shot_records: List of created Shot record dicts (with "id" keys),
             in the same order as analysis["scenes"].
         r2_url_map: Dict mapping frame filename → R2 public URL.
+        sample_rate: Create frames every N seconds (default: 1 = every second).
 
     Returns:
         List of field dicts ready for Airtable batch_create on the Frames table.
     """
     video_id = analysis["videoId"]
     scenes = analysis.get("scenes", [])
-    frames: list[dict[str, Any]] = []
+    frames_by_key: dict[str, dict[str, Any]] = {}
 
     for i, scene in enumerate(scenes):
         shot_record_id = shot_records[i]["id"] if i < len(shot_records) else None
         start = int(scene["startTimestamp"])
         end = int(scene["endTimestamp"])
 
-        for ts in range(start, end + 1):
+        for ts in range(start, end + 1, sample_rate):
             frame_key = f"{video_id}_t{ts:06d}"
+            
+            # Skip if already created (handles overlapping scene boundaries)
+            if frame_key in frames_by_key:
+                continue
+                
             filename = f"frame_{ts:05d}_t{ts:03d}.000s.png"
 
             record: dict[str, Any] = {
@@ -209,9 +216,9 @@ def build_frame_records(
             if url:
                 record["Frame Image"] = [{"url": url}]
 
-            frames.append(record)
+            frames_by_key[frame_key] = record
 
-    return frames
+    return list(frames_by_key.values())
 
 
 def publish_to_airtable(
@@ -224,6 +231,8 @@ def publish_to_airtable(
     merge_scenes: bool = False,
     min_scene_duration: float = 5.0,
     skip_frames: bool = False,
+    max_workers: int = 1,
+    frame_sample_rate: int = 1,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
@@ -371,12 +380,12 @@ def publish_to_airtable(
                         "Deleted %d existing Frame records", len(existing_frame_ids)
                     )
 
-            # Generate frame filenames for all timestamps
+            # Generate frame filenames (respecting sample rate)
             frame_filenames = []
             for scene in analysis["scenes"]:
                 start = int(scene["startTimestamp"])
                 end = int(scene["endTimestamp"])
-                for ts in range(start, end + 1):
+                for ts in range(start, end + 1, frame_sample_rate):
                     frame_filenames.append(f"frame_{ts:05d}_t{ts:03d}.000s.png")
 
             # Upload all frames to R2 (reuse s3_client from scene uploads)
@@ -386,11 +395,12 @@ def publish_to_airtable(
                 capture_dir=capture_dir,
                 video_id=video_id,
                 frame_filenames=frame_filenames,
+                max_workers=max_workers,
             )
 
             # Build and create Frame records
             frame_records = build_frame_records(
-                analysis, video_record_id, created, frame_url_map
+                analysis, video_record_id, created, frame_url_map, sample_rate=frame_sample_rate
             )
             created_frames = frames_table.batch_create(frame_records)
             frames_created_count = len(created_frames)

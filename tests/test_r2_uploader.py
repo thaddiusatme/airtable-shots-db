@@ -477,3 +477,42 @@ class TestUploadAllFrames:
                 video_id="KGHoVptow30",
                 frame_filenames=["frame_00000_t000.000s.png"],
             )
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_parallel_upload_with_max_workers(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        """Should support parallel uploads with max_workers parameter."""
+        mock_upload.return_value = "https://r2.dev/fake.png"
+        mock_client = MagicMock()
+
+        filenames = [f"frame_{i:05d}_t{i:03d}.000s.png" for i in range(20)]
+
+        upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=filenames,
+            max_workers=4,
+        )
+
+        assert mock_upload.call_count == 20
+
+    @patch("publisher.r2_uploader.upload_frame")
+    def test_default_max_workers_is_sequential(
+        self, mock_upload, r2_config: R2Config, capture_dir: Path
+    ):
+        """Without max_workers param, should default to sequential (1 worker)."""
+        mock_upload.return_value = "https://r2.dev/fake.png"
+        mock_client = MagicMock()
+
+        upload_all_frames(
+            s3_client=mock_client,
+            config=r2_config,
+            capture_dir=str(capture_dir),
+            video_id="KGHoVptow30",
+            frame_filenames=["frame_00000_t000.000s.png"],
+        )
+
+        mock_upload.assert_called_once()

@@ -157,6 +157,28 @@ class TestAddFramesTableCreatesTable:
         ]
         assert field_names == expected
 
+    @patch("setup_airtable.create_field")
+    @patch("setup_airtable.api")
+    def test_frame_image_uses_correct_attachment_type(self, mock_api, mock_create_field):
+        """Frame Image must use multipleAttachments (plural), not multipleAttachment."""
+        mock_base = MagicMock()
+        mock_base.schema.side_effect = [
+            _mock_schema(EXISTING_TABLES),
+            _mock_schema(EXISTING_TABLES_WITH_FRAMES),
+        ]
+        mock_api.base.return_value = mock_base
+
+        from setup_airtable import add_frames_table
+        add_frames_table("appTEST123")
+
+        frame_image_calls = [
+            c for c in mock_create_field.call_args_list
+            if c[0][2].get("name") == "Frame Image"
+        ]
+        assert len(frame_image_calls) == 1
+        payload = frame_image_calls[0][0][2]
+        assert payload["type"] == "multipleAttachments"  # plural, not singular
+
 
 # ---------------------------------------------------------------------------
 # Test: skips creation if Frames table already exists (idempotent)

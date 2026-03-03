@@ -229,7 +229,7 @@ def add_frames_table(base_id):
     # Image + metadata
     create_field(base_id, frames_table_id, {
         "name": "Frame Image",
-        "type": "multipleAttachment",
+        "type": "multipleAttachments",
     })
     create_field(base_id, frames_table_id, {
         "name": "Source Filename",

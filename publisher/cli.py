@@ -72,6 +72,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip R2 image uploads (metadata-only publish).",
     )
     parser.add_argument(
+        "--skip-frames",
+        action="store_true",
+        default=False,
+        help="Skip Frame record creation (metadata-only publish without per-second frames).",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         default=False,
@@ -130,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             segment_transcripts=args.segment_transcripts,
             merge_scenes=args.merge_scenes,
             min_scene_duration=args.min_scene_duration,
+            skip_frames=args.skip_frames,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

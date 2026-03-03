@@ -22,6 +22,7 @@ from publisher.r2_uploader import (
     R2UploadError,
     build_attachment_urls,
     create_s3_client,
+    upload_all_frames,
     upload_scene_frames,
 )
 from segmenter.scene_merger import merge_short_scenes
@@ -222,6 +223,7 @@ def publish_to_airtable(
     segment_transcripts: bool = False,
     merge_scenes: bool = False,
     min_scene_duration: float = 5.0,
+    skip_frames: bool = False,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
@@ -269,6 +271,7 @@ def publish_to_airtable(
         )
 
     # Upload images to R2 if configured
+    s3_client = None
     attachment_urls: list[dict[str, Any]] | None = None
     if r2_config:
         try:
@@ -354,10 +357,50 @@ def publish_to_airtable(
         created = shots_table.batch_create(shot_records)
         logger.info("Created %d Shot records", len(created))
 
+        # Create Frame records if R2 is configured and frames not skipped
+        frames_created_count = 0
+        if r2_config and not skip_frames:
+            frames_table = api.table(base_id, "Frames")
+
+            # Delete existing frames for idempotency
+            if existing_videos:
+                existing_frame_ids = existing_videos[0]["fields"].get("Frames", [])
+                if existing_frame_ids:
+                    frames_table.batch_delete(existing_frame_ids)
+                    logger.info(
+                        "Deleted %d existing Frame records", len(existing_frame_ids)
+                    )
+
+            # Generate frame filenames for all timestamps
+            frame_filenames = []
+            for scene in analysis["scenes"]:
+                start = int(scene["startTimestamp"])
+                end = int(scene["endTimestamp"])
+                for ts in range(start, end + 1):
+                    frame_filenames.append(f"frame_{ts:05d}_t{ts:03d}.000s.png")
+
+            # Upload all frames to R2 (reuse s3_client from scene uploads)
+            frame_url_map = upload_all_frames(
+                s3_client=s3_client,
+                config=r2_config,
+                capture_dir=capture_dir,
+                video_id=video_id,
+                frame_filenames=frame_filenames,
+            )
+
+            # Build and create Frame records
+            frame_records = build_frame_records(
+                analysis, video_record_id, created, frame_url_map
+            )
+            created_frames = frames_table.batch_create(frame_records)
+            frames_created_count = len(created_frames)
+            logger.info("Created %d Frame records", frames_created_count)
+
         return {
             "video_record_id": video_record_id,
             "video_id": video_id,
             "shots_created": len(created),
+            "frames_created": frames_created_count,
         }
 
     except PublisherError:

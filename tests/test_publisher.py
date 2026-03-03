@@ -618,6 +618,201 @@ class TestPublishToAirtable:
 
 
 # ---------------------------------------------------------------------------
+# Frames integration tests (publish_to_airtable + Frames table)
+# ---------------------------------------------------------------------------
+
+
+class TestPublishFrameIntegration:
+    """Tests for Frame record creation within publish_to_airtable()."""
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos, Shots, and Frames tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+        mock_frames = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            if table_name == "Frames":
+                return mock_frames
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Default: new video, shots created successfully
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+        mock_frames.batch_create.return_value = [
+            {"id": f"recFRAME{i}"} for i in range(131)
+        ]
+
+        return mock_api, mock_videos, mock_shots, mock_frames
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_creates_frame_records_with_r2_config(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, analysis_dir: Path,
+    ):
+        """When r2_config is provided, should create Frame records."""
+        _, _, _, mock_frames = self._setup_mocks(mock_api_cls)
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {}
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        mock_frames.batch_create.assert_called_once()
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_skip_frames_skips_frame_creation(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, analysis_dir: Path,
+    ):
+        """When skip_frames=True, should NOT create Frame records."""
+        _, _, _, mock_frames = self._setup_mocks(mock_api_cls)
+        mock_scene_upload.return_value = {}
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+            skip_frames=True,
+        )
+
+        mock_frames.batch_create.assert_not_called()
+        mock_upload_all.assert_not_called()
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.Api")
+    def test_no_r2_config_skips_frame_creation(
+        self, mock_api_cls, mock_upload_all, analysis_dir: Path
+    ):
+        """Without r2_config, should NOT create Frame records."""
+        _, _, _, mock_frames = self._setup_mocks(mock_api_cls)
+
+        publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+        )
+
+        mock_frames.batch_create.assert_not_called()
+        mock_upload_all.assert_not_called()
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_summary_includes_frames_created(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, analysis_dir: Path,
+    ):
+        """Return dict should include frames_created count."""
+        _, _, _, mock_frames = self._setup_mocks(mock_api_cls)
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {}
+        mock_frames.batch_create.return_value = [
+            {"id": f"recF{i}"} for i in range(10)
+        ]
+
+        r2_config = MagicMock()
+        result = publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        assert "frames_created" in result
+        assert result["frames_created"] == 10
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_idempotent_deletes_existing_frames(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, analysis_dir: Path,
+    ):
+        """Re-running should delete existing Frames before creating new ones."""
+        _, mock_videos, _, mock_frames = self._setup_mocks(mock_api_cls)
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {}
+
+        # Existing video with reverse-link Frames field
+        mock_videos.all.return_value = [
+            {
+                "id": "recVID1",
+                "fields": {
+                    "Video ID": "KGHoVptow30",
+                    "Shots": [],
+                    "Frames": ["recOLDF1", "recOLDF2", "recOLDF3"],
+                },
+            }
+        ]
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        mock_frames.batch_delete.assert_called_once_with(
+            ["recOLDF1", "recOLDF2", "recOLDF3"]
+        )
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_calls_upload_all_frames(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, analysis_dir: Path,
+    ):
+        """Should call upload_all_frames with correct video_id."""
+        self._setup_mocks(mock_api_cls)
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {"frame.png": "https://r2.dev/frame.png"}
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(analysis_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        mock_upload_all.assert_called_once()
+        call_kwargs = mock_upload_all.call_args
+        assert call_kwargs[1]["video_id"] == "KGHoVptow30"
+
+
+# ---------------------------------------------------------------------------
 # Dry-run mode tests
 # ---------------------------------------------------------------------------
 

@@ -1,19 +1,20 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** March 1, 2026  
-**Branch:** `feature/pipeline-resumption`  
-**Status:** Phase 3 Complete + Pipeline Server + Checkpoint Resumption + Resume API (TDD Iteration 2)
+**Last Updated:** March 3, 2026  
+**Branch:** `main`  
+**Status:** Frames Feature Complete (TDD Iterations 1–4) | Pipeline Resumption Complete | Frames Table Schema Pending ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18))
 
 ---
 
 ## Overview
 
-Three-phase pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions and frame thumbnails.
+Four-component pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions, frame thumbnails, and per-second frame timeline records.
 
 **Pipeline Flow:**
 1. **Capture** (TypeScript/Playwright) → Frame PNGs + manifest.json
 2. **Analyze** (Python/OpenCV/Ollama) → Scene boundaries + AI descriptions → analysis.json
-3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots with R2-hosted images
+3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images
+4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server at :3333)
 
 ---
 
@@ -79,14 +80,15 @@ Three-phase pipeline for extracting, analyzing, and publishing YouTube video sho
 - Optional `--skip-images` flag for metadata-only publish
 
 **Module Structure:**
-- `publisher/publish.py` — Core publisher logic
-- `publisher/r2_uploader.py` — Cloudflare R2 S3-compatible uploads
-- `publisher/cli.py` — CLI with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--verbose`
+- `publisher/publish.py` — Core publisher (Videos, Shots, Frames + idempotency for all)
+- `publisher/r2_uploader.py` — R2 uploads for scene boundaries + all frames (parallel support)
+- `publisher/frame_helpers.py` — `parse_timestamp_from_filename()` regex parser
+- `publisher/cli.py` — CLI with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--skip-frames`, `--segment-transcripts`, `--merge-scenes`, `--min-scene-duration`, `--max-concurrent-uploads`, `--frame-sampling`, `--verbose`
 - `publisher/__main__.py` — `python -m publisher` support
 
-**Tests:** 151 passing (47 publisher + 8 CLI + 18 r2_uploader + 70 analyzer + 8 scene_merger)
+**Tests:** 190 Python passing (see test coverage table)
 
-**Real-data validation:** KGHoVptow30, 34 scenes → 67 frames to R2 → 34 Shot records with thumbnails
+**Real-data validation:** `bjdBVZa66oU`, 34 shots → 34 frames uploaded to R2 with 4 concurrent workers → Frames table blocked on GH #18
 
 ---
 
@@ -101,7 +103,9 @@ Three-phase pipeline for extracting, analyzing, and publishing YouTube video sho
 | Thumbnail URL | URL | Publisher |
 | Shots | Linked records → Shots | Auto (reverse link) |
 
-**Not yet populated:** Video Title, Channel, Duration, Total Scenes, Analysis Date, Triage Status, Transcript fields
+**Populated by Chrome extension (transcript extract):** Video Title, Transcript (Full), Transcript (Timestamped), Transcript Language, Transcript Source, Triage Status, Channel
+
+**Not yet populated:** Duration, Total Scenes, Analysis Date
 
 ### Shots Table (1 record per scene)
 | Field | Type | Populated By |
@@ -121,6 +125,19 @@ Three-phase pipeline for extracting, analyzing, and publishing YouTube video sho
 | **Scene End** | **Attachment** | **Publisher (R2 URL)** |
 
 **Not yet populated:** Shot Function, Shot Type, Camera Angle, Movement, Lighting, Setting, Subject, On-screen Text, Description (Manual), Tags, AI JSON, Needs Review, Captured At, Rights Note
+
+### Frames Table ⚠️ PENDING CREATION — [GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)
+| Field | Type | Populated By |
+|---|---|---|
+| Frame Key | Single line text (`{videoId}_t{ts:06d}`) | Publisher |
+| Video | Linked record → Videos | Publisher |
+| Shot | Linked record → Shots | Publisher |
+| Timestamp (sec) | Number (int) | Publisher |
+| Timestamp (hh:mm:ss) | Single line text | Publisher |
+| **Frame Image** | **Attachment** | **Publisher (R2 URL)** |
+| Source Filename | Single line text | Publisher |
+
+**Publisher code is complete.** Blocked on Airtable table creation only. Run `python setup_airtable.py` (after adding Frames to it) or create manually.
 
 ---
 
@@ -160,12 +177,13 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 | Analyzer (VLM) | 20 | ✅ Passing |
 | Segmenter (transcript) | 13 | ✅ Passing |
 | Segmenter (scene merger) | 8 | ✅ Passing |
-| Publisher (core) | 47 | ✅ Passing |
-| Publisher (CLI) | 8 | ✅ Passing |
-| Publisher (R2 uploader) | 18 | ✅ Passing |
+| Publisher (core + frames) | 54 | ✅ Passing |
+| Publisher (CLI) | 11 | ✅ Passing |
+| Publisher (R2 uploader) | 23 | ✅ Passing |
+| Publisher (frame helpers) | 12 | ✅ Passing |
 | Pipeline State (Node) | 15 | ✅ Passing |
 | Resume API (Node) | 9 | ✅ Passing |
-| **Total** | **175** | **✅ All Passing** |
+| **Total** | **202** | **✅ All Passing** |
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
 Pipeline state tests use `node:test` with temp directories (no external deps).  
@@ -186,16 +204,21 @@ airtable-shots-db/
 ├── publisher/
 │   ├── __init__.py
 │   ├── __main__.py
-│   ├── cli.py              # CLI entry point
-│   ├── publish.py          # Core publisher + Airtable API
-│   └── r2_uploader.py      # Cloudflare R2 S3 uploads
+│   ├── cli.py              # CLI entry point (all flags)
+│   ├── publish.py          # Core publisher: Videos, Shots, Frames
+│   ├── r2_uploader.py      # R2 uploads: scene boundaries + all frames (parallel)
+│   └── frame_helpers.py    # parse_timestamp_from_filename() regex
 ├── tests/
 │   ├── test_analyze_cli.py
+│   ├── test_frame_helpers.py
 │   ├── test_publisher.py
 │   ├── test_publisher_cli.py
 │   ├── test_r2_uploader.py
 │   ├── test_scene_detector.py
+│   ├── test_scene_merger.py
+│   ├── test_transcript_segmenter.py
 │   └── test_vlm_describer.py
+├── captures/               # Capture directories with frames + analysis.json (gitignored)
 ├── pipeline-server/
 │   ├── orchestrator.js     # Pipeline orchestration + state persistence
 │   ├── server.js           # Express API server
@@ -238,14 +261,16 @@ airtable-shots-db/
 
 ---
 
-## 🎯 Recent Commits (feature/pipeline-resumption)
+## 🎯 Recent Commits
 
 | Hash | Description |
 |---|---|
-| `238694a` | feat: add resume API endpoints and extension resume button (TDD iteration 2) |
-| `1535c0a` | docs: update NEXT_SESSION_PROMPT with TDD iteration 1 completion |
-| `7eaa9f7` | docs: update CURRENT_STATE with pipeline resumption progress and lessons |
-| `1065e8f` | feat: add checkpoint state persistence and capture resumption (TDD iteration 1) |
+| `7b6343d` | feat: add parallel uploads and frame sampling (TDD iteration 4) |
+| `4504887` | feat: integrate Frame records into publisher with idempotency + --skip-frames (TDD iteration 3) |
+| `582db8e` | feat: add frame record builder and R2 all-frames uploader (TDD iteration 2) |
+| `6539a04` | feat: add timestamp parsing from frame filenames (TDD iteration 1) |
+| `238694a` | feat: add resume API endpoints and extension resume button |
+| `1065e8f` | feat: add checkpoint state persistence and capture resumption |
 
 ---
 
@@ -285,13 +310,15 @@ airtable-shots-db/
 - [x] R2 Image Uploads (Scene Start/End attachments)
 - [x] Pipeline Server (Express orchestrator + Chrome extension trigger)
 - [x] VLM Bypass (`--skip-vlm` flag end-to-end)
-- [x] **Checkpoint state persistence** (`.pipeline_state.json` save/load)
-- [x] **Existing frame detection** (`findExistingFrames`, `calculateStartFrame`)
-- [x] **Step skipping on resume** (completed steps logged and skipped)
-- [x] **Partial capture recovery** (failed capture saves `framesCompleted` + `lastFrame`)
-- [x] **Resume API endpoints** (`GET /pipeline/resumable`, `POST /pipeline/resume/:runId`)
-- [x] **Extension resume button** (detect resumable jobs, show "🔄 Resume Failed Pipeline")
-- [ ] **End-to-end integration test** (Capture → Analyze → Publish on fresh video)
+- [x] Checkpoint state persistence (`.pipeline_state.json` save/load)
+- [x] Step skipping on resume (completed steps logged and skipped)
+- [x] Resume API endpoints (`GET /pipeline/resumable`, `POST /pipeline/resume/:runId`)
+- [x] Extension resume button (detect resumable jobs, show "Resume Failed Pipeline")
+- [x] **Frames feature — publisher code complete** (TDD iterations 1–4, 117 tests)
+- [x] **Parallel frame uploads** (`--max-concurrent-uploads N`, ThreadPoolExecutor)
+- [x] **Frame sampling** (`--frame-sampling N`, deduplication by Frame Key)
+- [ ] **Create Frames table in Airtable** ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)) ← **NEXT P0**
+- [ ] **Integrate Frames into Chrome Extension** ([GH #19](https://github.com/thaddiusatme/airtable-shots-db/issues/19)) ← Blocked by #18
 
 ### P1 — Polish & Optimization
 - [ ] **Step output validation** (check `analysis.json` exists before skipping analyze)
@@ -299,6 +326,8 @@ airtable-shots-db/
 - [ ] **Idempotent R2 uploads** (HEAD request before upload, skip if exists)
 - [ ] **Thumbnail generation** (resize frames to 640px before upload, save bandwidth)
 - [ ] **Logging improvements** (structured JSON logs, log levels)
+- [ ] **End-to-end integration test** (Capture → Analyze → Publish → Frames on fresh video)
+- [ ] **`setup_airtable.py` update** (add Frames table creation to schema script)
 
 ### P2 — Advanced Features
 - [ ] **Batch processing** (publish multiple videos in one run)

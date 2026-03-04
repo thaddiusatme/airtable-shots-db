@@ -1,0 +1,261 @@
+# YouTube Shot List Pipeline: Capture → Analyze → Airtable
+
+## Summary
+
+Implement a three-stage pipeline to create a "shot list" for YouTube videos:
+1. **Capture**: Add screenshot capture feature to existing Chrome extension (1fps frames)
+2. **Analyze**: Build Python scene analyzer using OpenCV (fast pre-filter) + Ollama VLM (boundary frame descriptions)
+3. **Publish**: Write curated scene shots (first + last frame per scene) to Airtable
+
+This enables creating structured shot lists with AI-generated scene descriptions, all within the Free plan's 1,000 record limit (~12–33 videos).
+
+## Context
+
+- **Chrome extension** already exists at `/Users/thaddius/repos/2-20/airtable-shots-db/chrome-extension/` with working transcript extraction, Airtable upsert patterns, and settings page
+- **Airtable base** is set up with normalized schema: Channels → Videos → Shots (26+ fields including AI fields)
+- **yt-frame-poc CLI** (`/Users/thaddius/repos/2-21/yt-frame-poc/`) already captures 1fps screenshots and generates manifest.json
+- **Ollama** is installed locally with `llama3.2-vision:latest` (7.8 GB) already pulled
+- **Python env** at `/Users/thaddius/repos/2-20/.venv/` has pyairtable, FastAPI, requests, etc.
+
+## Architecture
+
+```
+CAPTURE                      ANALYZE                       PUBLISH
+(extension or CLI)           (Python worker)               (Python → Airtable)
+
+┌──────────────┐  local fs   ┌───────────────────┐         ┌─────────────┐
+│ Extension:   │────────────→│ Pass 1: OpenCV    │         │ Airtable    │
+│ new "Capture │  PNGs +     │  histogram diff   │         │ Channels    │
+│ Shots" tab   │  manifest   │  (~2s / 1800 frm) │         │ Videos      │
+│ in popup     │             │                   │         │ Shots       │
+├──────────────┤             │ Pass 2: Ollama    │────────→│ (first+last │
+│ CLI:         │────────────→│  llama3.2-vision  │         │  per scene) │
+│ yt-frame-poc │             │  ~20-50 boundary  │         └─────────────┘
+└──────────────┘             │  frames only      │
+                             │  (~5-25 min)      │
+                             └───────────────────┘
+                                  raw frames
+                                  deleted after
+```
+
+## Phase 1: Chrome Extension — Screenshot Capture ✅
+
+> **Status**: Implemented on branch `feature/screenshot-capture` (commit `51919ec`, 2026-02-22)
+> **Manually tested**: Frames saved to Downloads folder successfully.
+
+### Changes to existing files
+
+**manifest.json** ✅
+- Added `downloads` permission for saving PNGs locally
+
+**popup.html** ✅
+- Added "Capture Shots" section below transcript section
+- Interval input (default: 1 sec, min 0.5)
+- Max screenshots input (default: 100)
+- Start / Stop Capture button
+- Status display: `Captured: 0 / 100`
+- "Open captures folder" link after capture completes
+
+**popup.js** ✅
+- Sends `startCapture` / `stopCapture` messages to content script
+- Tracks progress via `chrome.runtime.onMessage` listener
+- Downloads frames via `chrome.downloads.download()` API
+- UI state management (disable inputs during capture, show/hide buttons)
+
+**content.js** ✅
+- On `startCapture`: finds `<video>` element, starts interval timer
+- Each tick: `canvas.drawImage(video)` → `canvas.toBlob()` → base64 data URL → sends to popup for download
+- On `stopCapture` or max reached: stops timer, generates manifest.json, downloads it
+- Filename format: `frame_{index}_t{timestamp}s.png`
+
+### Implementation notes
+
+- Used base64 data URLs to bridge content script → popup (content scripts can't call `chrome.downloads` directly)
+- Reused existing message-passing pattern (`chrome.tabs.sendMessage` / `chrome.runtime.onMessage`)
+- Transcript extraction left completely untouched — capture is a separate code path
+
+### Output format
+
+```
+~/Downloads/yt-captures/
+  {videoId}_{datetime}/
+    frame_00000_t000.000s.png
+    frame_00001_t001.000s.png
+    ...
+    manifest.json
+```
+
+### What stays unchanged
+- Existing transcript extraction
+- Settings page and Airtable credential storage
+- Channel/Video upsert logic (will be reused in Stage 3)
+
+## Phase 2: Scene Analyzer (Python)
+
+> **Pass 1 Status**: Implemented on branch `feature/scene-analyzer` (commit `1134cad`, 2026-02-22)
+> **Pass 2 Status**: Implemented (commit `117bfcc`, 2026-02-22)
+> **Real-data validated**: End-to-end on `6KktB5aNrjE` — 5 scenes from 10 frames, VLM in 42.3s (commit `abb241b`)
+> **Tests**: 70 passing (29 scene_detector + 8 CLI + 20 VLM + 13 transcript_segmenter)
+>
+> **Pass 1 Lessons learned**:
+> - TDD RED phase: writing tests first that import from non-existent module confirms the test harness works before any implementation
+> - Boundary semantics require careful index mapping: `distances[i]` is between `frame[i]` and `frame[i+1]`, so a detected boundary at distance index `i` means a new scene starts at frame `i+1`
+> - HSV histogram chi-squared distance on solid-color test frames produces clean 0.0 (identical) vs large positive (different) — good for deterministic test assertions
+> - Filename format string `{i:07.3f}` (not `{i:06.3f}`) matches the real Phase 1 output `t000.000s` — fixture format must match manifest format exactly
+> - `build_analysis()` takes scene-start frame indices (not raw distance indices) — keeps the API clean and delegates the index+1 conversion to the caller (CLI)
+>
+> **Pass 2 Lessons learned**:
+> - Mocking `requests.post` at the module level (`@patch("analyzer.vlm_describer.requests.post")`) cleanly isolates VLM tests from a running Ollama server — all 20 tests run in <0.5s
+> - Per-scene error handling is critical: wrapping each `describe_frame()` call in try/except means one timeout or bad frame doesn't abort the entire VLM pass — failed scenes get `[Error: ...]` descriptions
+> - Custom `OllamaError` exception provides a clean abstraction: callers catch one type instead of checking for `ConnectionError`, `Timeout`, and HTTP status codes separately
+> - The `requests` library was listed in `requirements.txt` but not installed in the venv — need to verify venv state matches requirements before running tests
+> - Keeping `vlm_describer.py` separate from `scene_detector.py` preserves single-responsibility: OpenCV code has no HTTP/network dependencies, VLM code has no OpenCV dependencies
+>
+> **Real-data testing lessons**:
+> - Chi-squared histogram distances on real video span 0–3000+, not 0–1 as with synthetic test frames. Default threshold changed from 0.5 → 10.0
+> - Within-scene motion (camera pans, slight color shifts) produces distances 0–2; actual scene cuts produce 10–3000+
+> - Verbose (`-v`) distance logging per frame pair is essential for threshold tuning — added as `logger.debug()` output
+> - VLM descriptions on real data are coherent: model correctly identified "House of the Dragon", "King Viserys", throne room settings from boundary frames
+> - End-to-end timing on 10 real frames: Pass 1 in 0.4s, Pass 2 (5 scenes × llama3.2-vision) in 42.3s (~8.5s/scene)
+
+New module in `airtable-shots-db/analyzer/` with two-pass strategy:
+
+**Pass 1 — OpenCV histogram comparison (~2 seconds for 1800 frames)**
+- Load consecutive PNG pairs
+- Convert to HSV, compute histogram, chi-squared distance
+- Flag frames where distance > threshold (~0.4–0.6) as scene boundaries
+- Output: list of candidate boundary timestamps
+
+**Pass 2 — Ollama VLM on boundary frames only (~5–25 min)**
+- Send only candidate boundary frames to `llama3.2-vision:latest` via Ollama HTTP API (`localhost:11434`)
+- Prompt: describe the scene, classify transition type
+- ~20–50 calls × 10–30 sec each
+
+### Time estimates (36GB MacBook Pro Max)
+
+| Video length | Raw frames | CV pass | VLM calls | Total |
+|---|---|---|---|---|
+| 5 min | 300 | <1s | ~10–15 → 2–5 min | ~3–6 min |
+| 15 min | 900 | ~1s | ~15–30 → 5–15 min | ~6–16 min |
+| 30 min | 1800 | ~2s | ~25–50 → 8–25 min | ~9–27 min |
+
+### Queue worker
+
+- Uses `watchdog` (Python) to watch captures directory for new `manifest.json` files
+- Auto-triggers Pass 1 + Pass 2 when a new capture lands
+- Writes: `{capture_dir}/analysis.json`
+- Status tracking: `queued` → `analyzing` → `done` / `error`
+
+### Analysis output format
+
+```json
+{
+  "videoId": "dQw4w9WgXcQ",
+  "scenes": [
+    {
+      "sceneIndex": 0,
+      "startTimestamp": 0.0,
+      "endTimestamp": 12.0,
+      "firstFrame": "frame_00000_t000.000s.png",
+      "lastFrame": "frame_00012_t012.000s.png",
+      "description": "Wide establishing shot of a brick building exterior",
+      "transition": "cut"
+    }
+  ],
+  "totalScenes": 15,
+  "analysisModel": "llama3.2-vision:latest",
+  "analysisDate": "2026-02-22T14:30:00Z"
+}
+```
+
+## Phase 3: Airtable Publisher (Python) — COMPLETE
+
+> **Status**: Implemented on branch `feature/airtable-publisher` (commits `418ad50`–`88524d7`, 2026-02-22)
+> **Tests**: 151 total passing (47 publisher + 8 CLI + 18 r2_uploader + 70 analyzer + 8 scene_merger)
+> **Real-data validated**: KGHoVptow30, 34 scenes → 34 Shot records published to Airtable
+>
+> **Lessons learned (TDD)**:
+> - TDD RED→GREEN on publisher was clean: 51 tests written first, all passed on first implementation run — good test design pays off
+> - pyairtable v3.3.0 `Api.table(base_id, table_name)` pattern maps cleanly to mock with `side_effect` table router
+> - 1 Shot record per scene matches the "shot list" mental model and stays within budget (~30–80 records per video)
+> - `PublisherError` wraps all API exceptions into one type, matching the `OllamaError` pattern from Phase 2
+> - Dry-run mode skips `Api()` instantiation entirely — no credentials needed for preview
+> - Environment variables (`AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`) as fallbacks for CLI flags — follows 12-factor app pattern
+> - Mirroring analyzer's CLI structure (`cli.py` + `__main__.py`) keeps the codebase consistent
+>
+> **Lessons learned (real-data validation)**:
+> - Always query the Airtable metadata API (`/v0/meta/bases/{baseId}/tables`) before assuming field names — test fixtures don't catch schema mismatches
+> - Airtable `singleSelect` fields reject unknown values with 422 — `AI Status` must be exactly `Done`/`Queued`/`Processing`/`Error`, not `Complete`/`Pending`
+> - Linked record fields in Airtable formulas resolve to display values (primary field), NOT record IDs — `{Video}='recXXX'` always returns empty
+> - Fix: read Shot IDs from Video record's reverse-link `Shots` field instead of querying Shots table by formula
+> - Idempotency validated: re-run deleted 136 stale shots and created 68 fresh — no duplicates
+> - pyairtable `batch_create` and `batch_delete` auto-chunk in groups of 10 — no manual batching needed
+
+New modules in `airtable-shots-db/publisher/`:
+- `publisher/publish.py`: Core functions — `load_analysis()`, `build_video_fields()`, `build_shot_records()`, `publish_to_airtable()`
+- `publisher/cli.py`: CLI entry point with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--verbose`
+- `publisher/__main__.py`: Supports `python -m publisher` invocation
+- Reads `analysis.json`
+- Looks up or creates Video record by Video ID
+- Creates **1 Shot record per scene** (refactored from 2 records per scene)
+- Writes fields: Shot Label (S01, S02...), Video (linked), Timestamp (sec), Timestamp (hh:mm:ss), Transcript Start (sec), Transcript End (sec), AI Status, AI Description (Local), AI Model, Capture Method, Source Device, Scene Start (attachment), Scene End (attachment)
+
+**Real-data validated:** KGHoVptow30, 34 scenes → 34 Shot records with R2-hosted thumbnails
+
+### Airtable budget (Free plan, per video)
+
+| Item | Count |
+|---|---|
+| API calls (Video lookup + Shot batch creates) | ~5–10 |
+| Shot records created | ~30–80 |
+| Monthly API budget used (per video) | ~1% of 1,000 |
+
+## Phase 3.5: R2 Image Attachments — ✅ COMPLETE
+
+Cloudflare R2 integration for Scene Start / Scene End frame thumbnails.
+
+New module:
+- `publisher/r2_uploader.py`: R2Config, create_s3_client(), upload_frame(), upload_scene_frames(), build_attachment_urls()
+- Uses `boto3` S3-compatible API with R2 endpoint
+- Deduplicates shared boundary frames (67 uploads for 34 scenes)
+- Object key format: `{videoId}/{filename}`
+- Public URL: `https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev/{videoId}/{filename}`
+
+Integration:
+- `publish_to_airtable()` accepts optional `r2_config` parameter
+- `build_shot_records()` merges Scene Start/End attachments when available
+- CLI auto-detects R2 env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_URL`
+- `--skip-images` flag for metadata-only publish
+
+**Tests:** 18 r2_uploader tests, 130 total passing (all mocked)
+**Real-data validated:** 67 frames uploaded to R2, 34 Shot records with Scene Start/End thumbnails
+
+## Phase 4: yt-frame-poc alignment (later)
+
+- Fix `ShotRecord` type + `publishShots()` to match real Airtable schema
+- Ensure CLI output lands in same captures directory the analyzer watches
+
+## Phase 5: Production readiness (later)
+
+- End-to-end integration test on fresh video
+- Populate Video metadata (Title, Channel, Duration from manifest.json)
+- Error handling & retry logic (Airtable rate limits, R2 failures)
+- Idempotent R2 uploads (HEAD check before upload)
+- R2 cleanup on re-publish (delete old frames)
+- Thumbnail generation (resize to 640px before upload)
+- Write URL to `Shot Image` attachment field in Airtable
+
+## Acceptance Criteria
+
+- [x] Phase 1: Chrome extension captures frames at configurable interval, generates manifest.json, downloads to local folder
+- [x] Phase 2: Analyzer detects scene boundaries via OpenCV, generates analysis.json with VLM descriptions
+- [x] Phase 3: Publisher reads analysis.json, creates Shot records in Airtable with linked Video
+- [ ] End-to-end test: capture → analyze → publish workflow produces curated shot list in Airtable
+- [ ] Free plan budget respected: ~12–33 videos before hitting 1,000 record limit
+
+## Implementation Notes
+
+- Keep repos separate: airtable-shots-db owns extension + analyzer + publisher; yt-frame-poc stays as CLI tool
+- Both tools output to same `manifest.json` format
+- Default captures directory: `~/yt-captures/` (configurable)
+- Add to requirements.txt: `opencv-python`, `ollama`, `watchdog`

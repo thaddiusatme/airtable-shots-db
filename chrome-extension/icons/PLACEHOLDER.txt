@@ -1,0 +1,13 @@
+TODO: Add extension icons
+
+Required sizes:
+- icon16.png (16x16)
+- icon48.png (48x48)
+- icon128.png (128x128)
+
+For now, Chrome will show a default icon.
+
+To create icons:
+1. Design a simple icon (e.g., 📝 or YT→AT)
+2. Export in PNG format at required sizes
+3. Replace this file with actual icon files

@@ -127,6 +127,13 @@ ENV/
 env.bak/
 venv.bak/
 
+# Project-specific
+token.json
+client_secret.json
+.DS_Store
+captures/
+pipeline-server/node_modules/
+
 # Spyder project settings
 .spyderproject
 .spyproject

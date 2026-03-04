@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Transcript → Airtable</title>
+  <style>
+    body {
+      width: 400px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+    }
+    
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px 0;
+      color: #333;
+    }
+    
+    .status {
+      padding: 8px 12px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    
+    .status.info {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+    
+    .status.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    
+    .status.error {
+      background: #ffebee;
+      color: #c62828;
+    }
+    
+    .video-info {
+      margin-bottom: 12px;
+      padding: 8px;
+      background: #f5f5f5;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .video-info strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #1976d2;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+    
+    button:hover {
+      background: #1565c0;
+    }
+    
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    
+    .settings-link {
+      text-align: center;
+      margin-top: 12px;
+      font-size: 12px;
+    }
+    
+    .settings-link a {
+      color: #1976d2;
+      text-decoration: none;
+    }
+    
+    .settings-link a:hover {
+      text-decoration: underline;
+    }
+    
+    .transcript-preview {
+      max-height: 100px;
+      overflow-y: auto;
+      padding: 8px;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      white-space: pre-wrap;
+    }
+    
+    .hidden {
+      display: none;
+    }
+    
+    /* Capture Shots section */
+    .section-divider {
+      border: none;
+      border-top: 1px solid #e0e0e0;
+      margin: 16px 0;
+    }
+    
+    h2 {
+      font-size: 14px;
+      margin: 0 0 10px 0;
+      color: #333;
+    }
+    
+    .capture-controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    
+    .capture-controls label {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      font-size: 12px;
+      color: #555;
+    }
+    
+    .capture-controls input {
+      margin-top: 4px;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    
+    .capture-status {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    
+    .capture-status strong {
+      color: #333;
+    }
+    
+    button.stop {
+      background: #d32f2f;
+    }
+    
+    button.stop:hover {
+      background: #b71c1c;
+    }
+    
+    .open-folder-link {
+      text-align: center;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    
+    .open-folder-link a {
+      color: #1976d2;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    
+    .open-folder-link a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <h1>📝 YouTube Transcript Saver</h1>
+  
+  <div id="statusMessage" class="status info">
+    Ready to extract transcript...
+  </div>
+  
+  <div id="videoInfo" class="video-info hidden">
+    <strong id="videoTitle">Video Title</strong>
+    <span id="videoId">Video ID</span>
+  </div>
+  
+  <div id="transcriptPreview" class="transcript-preview hidden">
+    <!-- Transcript preview will be shown here -->
+  </div>
+  
+  <button id="extractBtn">Extract Transcript</button>
+  <button id="saveBtn" class="hidden" disabled>Save to Airtable</button>
+  
+  <!-- Full Pipeline Section -->
+  <hr class="section-divider">
+  <h2>🚀 Run Full Pipeline</h2>
+  <p style="font-size:12px;color:#666;margin:0 0 10px 0;">
+    Extract transcript → Capture frames → Analyze scenes → Publish shots
+  </p>
+
+  <div class="capture-controls">
+    <label>
+      Interval (sec)
+      <input type="number" id="pipelineInterval" value="5" min="0.5" step="0.5">
+    </label>
+    <label>
+      Max frames
+      <input type="number" id="pipelineMaxFrames" value="100" min="1" step="1">
+    </label>
+  </div>
+
+  <label style="font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+    <input type="checkbox" id="skipVlmCheckbox" checked>
+    Skip AI descriptions (faster, scene detection only)
+  </label>
+
+  <button id="runPipelineBtn" disabled>Run Full Pipeline</button>
+
+  <div id="pipelineStatus" class="capture-status hidden">
+    <strong>Status:</strong> <span id="pipelineStep">Waiting...</span>
+  </div>
+
+  <div id="resumeSection" class="hidden" style="margin-top:8px;">
+    <button id="resumePipelineBtn" style="background:#e65100;">
+      🔄 Resume Failed Pipeline
+    </button>
+    <div id="resumeInfo" style="font-size:11px;color:#666;margin-top:4px;"></div>
+  </div>
+
+  <div id="serverOffline" class="status error hidden">
+    Pipeline server not running. Start it with:<br>
+    <code style="font-size:11px;">cd airtable-shots-db/pipeline-server && npm start</code>
+  </div>
+
+  <!-- Legacy Capture Shots Section (browser-based) -->
+  <hr class="section-divider">
+  <h2>📸 Capture Shots (Legacy)</h2>
+  
+  <div class="capture-controls">
+    <label>
+      Interval (sec)
+      <input type="number" id="captureInterval" value="1" min="0.5" step="0.5">
+    </label>
+    <label>
+      Max frames
+      <input type="number" id="captureMax" value="100" min="1" step="1">
+    </label>
+  </div>
+  
+  <div id="captureStatus" class="capture-status hidden">
+    <strong>Captured:</strong> <span id="captureCount">0</span> / <span id="captureTotal">100</span>
+  </div>
+  
+  <button id="startCaptureBtn" disabled>Start Capture</button>
+  <button id="stopCaptureBtn" class="stop hidden">Stop Capture</button>
+  
+  <div id="openFolderLink" class="open-folder-link hidden">
+    <a id="openFolder" href="#">📂 Open captures folder</a>
+  </div>
+  
+  <div class="settings-link">
+    <a href="#" id="settingsLink">⚙️ Settings</a>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

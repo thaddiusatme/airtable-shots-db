@@ -17,6 +17,11 @@ if not AIRTABLE_API_KEY or not AIRTABLE_WORKSPACE_ID:
 api = Api(AIRTABLE_API_KEY)
 workspace = api.workspace(AIRTABLE_WORKSPACE_ID)
 
+def get_table_id(schema, table_name):
+    """Look up a table ID by name from a pyairtable schema object."""
+    return next(t.id for t in schema.tables if t.name == table_name)
+
+
 def create_field(base_id, table_id, field_payload):
     url = f"https://api.airtable.com/v0/meta/bases/{base_id}/tables/{table_id}/fields"
     response = requests.post(
@@ -32,6 +37,12 @@ def create_field(base_id, table_id, field_payload):
     time.sleep(0.3)
 
 def build_schema():
+    """Create a brand-new Airtable base with Channels/Videos/Shots tables.
+
+    WARNING: This calls workspace.create_base() and will create a DUPLICATE base
+    every time it runs. Do NOT re-run against an existing base. To add the Frames
+    table to an existing base, use add_frames_table() instead.
+    """
     print(f"Step 1: Creating a new Base in Workspace: {AIRTABLE_WORKSPACE_ID}...")
 
     # Step 1: Create the empty base with just the primary fields
@@ -64,9 +75,9 @@ def build_schema():
     # To add fields we need the actual table IDs. Let's fetch the base schema.
     schema = api.base(base_id).schema()
     
-    channels_table_id = next(t.id for t in schema.tables if t.name == "Channels")
-    videos_table_id = next(t.id for t in schema.tables if t.name == "Videos")
-    shots_table_id = next(t.id for t in schema.tables if t.name == "Shots")
+    channels_table_id = get_table_id(schema, "Channels")
+    videos_table_id = get_table_id(schema, "Videos")
+    shots_table_id = get_table_id(schema, "Shots")
 
     print("\nStep 2: Adding schema to 'Channels' table...")
     create_field(base_id, channels_table_id, {"name": "Channel URL", "type": "url"})
@@ -80,6 +91,12 @@ def build_schema():
     create_field(base_id, videos_table_id, {"name": "Channel", "type": "multipleRecordLinks", "options": {
         "linkedTableId": channels_table_id
     }})
+    create_field(base_id, videos_table_id, {"name": "Platform", "type": "singleLineText"})
+    create_field(base_id, videos_table_id, {"name": "Thumbnail URL", "type": "url"})
+    create_field(base_id, videos_table_id, {"name": "Transcript (Full)", "type": "multilineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript (Timestamped)", "type": "multilineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript Language", "type": "singleLineText"})
+    create_field(base_id, videos_table_id, {"name": "Transcript Source", "type": "singleLineText"})
 
 
     print("\nStep 4: Adding schema to 'Shots' table...")
@@ -156,5 +173,76 @@ def build_schema():
     print("\n✅ API Schema creation complete!")
     print(f"You can now visit Airtable to see your new base: https://airtable.com/{base_id}")
 
+def add_frames_table(base_id):
+    """Add the Frames table to an EXISTING Airtable base (additive only).
+
+    This function NEVER calls workspace.create_base(). It only adds
+    the Frames table and its fields to the base identified by base_id.
+
+    Idempotent: if Frames table already exists, prints a warning and returns.
+    """
+    base = api.base(base_id)
+    schema = base.schema()
+
+    # Guard: skip if Frames table already exists
+    table_names = [t.name for t in schema.tables]
+    if "Frames" in table_names:
+        print("⚠️  Frames table already exists — skipping creation.")
+        return
+
+    # Create Frames table with primary field only
+    print(f"Creating Frames table in base {base_id}...")
+    base.create_table("Frames", [{"name": "Frame Key", "type": "singleLineText"}])
+
+    # Re-fetch schema to get new table IDs
+    schema = base.schema()
+    frames_table_id = get_table_id(schema, "Frames")
+    videos_table_id = get_table_id(schema, "Videos")
+    shots_table_id = get_table_id(schema, "Shots")
+
+    # Add 6 additional fields per GH #18 spec
+    print("Adding fields to Frames table...")
+
+    # Linking
+    create_field(base_id, frames_table_id, {
+        "name": "Video",
+        "type": "multipleRecordLinks",
+        "options": {"linkedTableId": videos_table_id},
+    })
+    create_field(base_id, frames_table_id, {
+        "name": "Shot",
+        "type": "multipleRecordLinks",
+        "options": {"linkedTableId": shots_table_id},
+    })
+
+    # Timestamps
+    create_field(base_id, frames_table_id, {
+        "name": "Timestamp (sec)",
+        "type": "number",
+        "options": {"precision": 0},
+    })
+    create_field(base_id, frames_table_id, {
+        "name": "Timestamp (hh:mm:ss)",
+        "type": "singleLineText",
+    })
+
+    # Image + metadata
+    create_field(base_id, frames_table_id, {
+        "name": "Frame Image",
+        "type": "multipleAttachments",
+    })
+    create_field(base_id, frames_table_id, {
+        "name": "Source Filename",
+        "type": "singleLineText",
+    })
+
+    print("✅ Frames table created with all fields!")
+
+
 if __name__ == "__main__":
-    build_schema()
+    import sys
+    if "--add-frames-only" in sys.argv:
+        base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
+        add_frames_table(base_id)
+    else:
+        build_schema()

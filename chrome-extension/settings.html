@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Settings — YouTube Transcript Saver</title>
+  <style>
+    body {
+      max-width: 480px;
+      margin: 40px auto;
+      padding: 0 24px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      color: #333;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0 0 4px 0;
+    }
+
+    .subtitle {
+      color: #666;
+      font-size: 13px;
+      margin-bottom: 24px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+
+    .help-text {
+      display: block;
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      font-family: monospace;
+      box-sizing: border-box;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #1976d2;
+      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+    }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 20px;
+    }
+
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    #saveBtn {
+      background: #1976d2;
+      color: white;
+      flex: 1;
+    }
+
+    #saveBtn:hover:not(:disabled) {
+      background: #1565c0;
+    }
+
+    #testBtn {
+      background: #f5f5f5;
+      color: #333;
+      border: 1px solid #ccc;
+    }
+
+    #testBtn:hover:not(:disabled) {
+      background: #e0e0e0;
+    }
+
+    #clearBtn {
+      background: transparent;
+      color: #c62828;
+      border: 1px solid #c62828;
+    }
+
+    #clearBtn:hover:not(:disabled) {
+      background: #ffebee;
+    }
+
+    .status {
+      padding: 8px 12px;
+      border-radius: 4px;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    .status.info {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+
+    .status.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .status.error {
+      background: #ffebee;
+      color: #c62828;
+    }
+
+    .status.hidden {
+      display: none;
+    }
+
+    .last-saved {
+      font-size: 12px;
+      color: #999;
+      margin-top: 8px;
+    }
+
+    .docs-section {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid #eee;
+    }
+
+    .docs-section h2 {
+      font-size: 15px;
+      margin: 0 0 8px 0;
+    }
+
+    .docs-section ol {
+      padding-left: 20px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .docs-section a {
+      color: #1976d2;
+      text-decoration: none;
+    }
+
+    .docs-section a:hover {
+      text-decoration: underline;
+    }
+
+    .back-link {
+      display: inline-block;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: #1976d2;
+      text-decoration: none;
+    }
+
+    .back-link:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <a href="#" id="backLink" class="back-link">← Back to extension</a>
+
+  <h1>⚙️ Settings</h1>
+  <p class="subtitle">Configure your Airtable credentials for saving transcripts.</p>
+
+  <div class="form-group">
+    <label for="apiKey">Airtable API Key</label>
+    <span class="help-text">Starts with "pat" — find it at
+      <a href="https://airtable.com/create/tokens" target="_blank">airtable.com/create/tokens</a>
+    </span>
+    <input type="password" id="apiKey" placeholder="patXXXXXXXXXXXXXX" autocomplete="off">
+  </div>
+
+  <div class="form-group">
+    <label for="baseId">Airtable Base ID</label>
+    <span class="help-text">Starts with "app" — visible in the URL when viewing your base.</span>
+    <input type="text" id="baseId" placeholder="appXXXXXXXXXXXXXX" autocomplete="off">
+  </div>
+
+  <div class="button-row">
+    <button id="saveBtn">Save Credentials</button>
+    <button id="testBtn">Test Connection</button>
+    <button id="clearBtn">Clear</button>
+  </div>
+
+  <div id="statusMessage" class="status hidden"></div>
+  <div id="lastSaved" class="last-saved"></div>
+
+  <div class="docs-section">
+    <h2>📖 Where to find your credentials</h2>
+    <ol>
+      <li><strong>API Key (Personal Access Token):</strong> Go to
+        <a href="https://airtable.com/create/tokens" target="_blank">airtable.com/create/tokens</a>
+        → Create a token with <code>data.records:read</code> and <code>data.records:write</code> scopes.
+      </li>
+      <li><strong>Base ID:</strong> Open your Airtable base → look at the URL:
+        <code>airtable.com/<strong>appXXXXXXXX</strong>/...</code> — the part starting with "app" is your Base ID.
+      </li>
+    </ol>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

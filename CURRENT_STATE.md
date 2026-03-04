@@ -2,7 +2,7 @@
 
 **Last Updated:** March 3, 2026  
 **Branch:** `main`  
-**Status:** Frames Feature Complete (TDD Iterations 1–4) | Pipeline Resumption Complete | Frames Table Schema Pending ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18))
+**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | Pipeline Resumption Complete | Chrome Extension Integrated
 
 ---
 
@@ -126,7 +126,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 
 **Not yet populated:** Shot Function, Shot Type, Camera Angle, Movement, Lighting, Setting, Subject, On-screen Text, Description (Manual), Tags, AI JSON, Needs Review, Captured At, Rights Note
 
-### Frames Table ⚠️ PENDING CREATION — [GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)
+### Frames Table ✅ CREATED — [GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18) RESOLVED
 | Field | Type | Populated By |
 |---|---|---|
 | Frame Key | Single line text (`{videoId}_t{ts:06d}`) | Publisher |
@@ -137,7 +137,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 | **Frame Image** | **Attachment** | **Publisher (R2 URL)** |
 | Source Filename | Single line text | Publisher |
 
-**Publisher code is complete.** Blocked on Airtable table creation only. Run `python setup_airtable.py` (after adding Frames to it) or create manually.
+**Status:** Table created in Airtable (commits `c359f18`, `564fe7d`). Publisher fully integrated. Chrome extension pipeline uploads all frames automatically.
 
 ---
 
@@ -265,12 +265,14 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
-| `7b6343d` | feat: add parallel uploads and frame sampling (TDD iteration 4) |
-| `4504887` | feat: integrate Frame records into publisher with idempotency + --skip-frames (TDD iteration 3) |
-| `582db8e` | feat: add frame record builder and R2 all-frames uploader (TDD iteration 2) |
-| `6539a04` | feat: add timestamp parsing from frame filenames (TDD iteration 1) |
+| `TBD` | feat(GH-19): integrate frames into chrome extension pipeline (orchestrator.js) |
+| `564fe7d` | fix(GH-18): correct attachment field type multipleAttachments (plural) |
+| `c359f18` | feat(GH-18): add_frames_table() — additive Frames table creation (TDD iteration 1) |
+| `7b6343d` | feat(GH-17): add parallel uploads and frame sampling (TDD iteration 4) |
+| `4504887` | feat(GH-17): integrate Frame records into publisher with idempotency + --skip-frames (TDD iteration 3) |
+| `582db8e` | feat(GH-17): add frame record builder and R2 all-frames uploader (TDD iteration 2) |
+| `6539a04` | feat(GH-17): add timestamp parsing from frame filenames (TDD iteration 1) |
 | `238694a` | feat: add resume API endpoints and extension resume button |
-| `1065e8f` | feat: add checkpoint state persistence and capture resumption |
 
 ---
 
@@ -305,7 +307,7 @@ airtable-shots-db/
 
 ## 🚀 Next Steps (Priority Order)
 
-### P0 — Core Functionality
+### P0 — Core Functionality ✅ COMPLETE
 - [x] Phase 3: Airtable Publisher (metadata)
 - [x] R2 Image Uploads (Scene Start/End attachments)
 - [x] Pipeline Server (Express orchestrator + Chrome extension trigger)
@@ -314,11 +316,11 @@ airtable-shots-db/
 - [x] Step skipping on resume (completed steps logged and skipped)
 - [x] Resume API endpoints (`GET /pipeline/resumable`, `POST /pipeline/resume/:runId`)
 - [x] Extension resume button (detect resumable jobs, show "Resume Failed Pipeline")
-- [x] **Frames feature — publisher code complete** (TDD iterations 1–4, 117 tests)
+- [x] **Frames feature — publisher code complete** ([GH #17](https://github.com/thaddiusatme/airtable-shots-db/issues/17)) — TDD iterations 1–4, 117 tests
 - [x] **Parallel frame uploads** (`--max-concurrent-uploads N`, ThreadPoolExecutor)
 - [x] **Frame sampling** (`--frame-sampling N`, deduplication by Frame Key)
-- [ ] **Create Frames table in Airtable** ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)) ← **NEXT P0**
-- [ ] **Integrate Frames into Chrome Extension** ([GH #19](https://github.com/thaddiusatme/airtable-shots-db/issues/19)) ← Blocked by #18
+- [x] **Create Frames table in Airtable** ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)) — Commits `c359f18`, `564fe7d`
+- [x] **Integrate Frames into Chrome Extension** ([GH #19](https://github.com/thaddiusatme/airtable-shots-db/issues/19)) — March 3, 2026
 
 ### P1 — Polish & Optimization
 - [ ] **Step output validation** (check `analysis.json` exists before skipping analyze)

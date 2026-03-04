@@ -9,6 +9,7 @@ const {
   calculateStartFrame,
   stateFilePath,
 } = require('./pipeline-state');
+const { retryWithBackoff, classifyError } = require('./retry');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
@@ -179,8 +180,8 @@ async function runPipeline(job, updateStatus) {
 
   fs.mkdirSync(capturesBase, { recursive: true });
 
-  // Load or create pipeline state for resumption
-  const stateFile = stateFilePath(capturesBase);
+  // Load or create pipeline state for resumption (per-video state file)
+  const stateFile = stateFilePath(capturesBase, videoId);
   const state = loadPipelineState(stateFile, job.runId);
   state.videoId = videoId;
   job.completedSteps = job.completedSteps || [];
@@ -219,69 +220,93 @@ async function runPipeline(job, updateStatus) {
     captureDir = job.captureDir || findCaptureDir(capturesBase, videoId);
     if (!job.completedSteps.includes('capture')) job.completedSteps.push('capture');
   } else {
-    // Check for existing frames (resumption)
+    // Check for existing frames from a previous (possibly failed) run
     const existingCaptureDir = findCaptureDir(capturesBase, videoId);
     const existingFrames = existingCaptureDir ? findExistingFrames(existingCaptureDir) : [];
-    const startFrame = calculateStartFrame(existingFrames);
 
-    if (startFrame > 0) {
-      console.log(`[orchestrator] Resuming capture from frame ${startFrame} (${existingFrames.length} existing frames)`);
-      updateStatus('running', `Resuming capture from frame ${startFrame}...`, 'capture');
-    } else {
-      updateStatus('running', 'Capturing frames via Playwright...', 'capture');
-    }
+    if (existingFrames.length > 0) {
+      // Reuse existing capture directory — yt-frame-poc doesn't support --start-frame
+      // and always creates a new timestamped dir, so we skip re-capture entirely
+      captureDir = existingCaptureDir;
+      job.captureDir = captureDir;
+      console.log(`[orchestrator] Reusing existing capture dir with ${existingFrames.length} frames: ${captureDir}`);
+      updateStatus('running', `Reusing ${existingFrames.length} existing frames (skipping capture)`, 'capture');
 
-    state.stepStates.capture.status = 'running';
-    state.stepStates.capture.startedAt = new Date().toISOString();
-    state.stepStates.capture.framesCompleted = startFrame;
-    savePipelineState(stateFile, state);
-
-    const interval = capture?.interval || 1;
-    const captureArgs = [
-      'src/index.ts',
-      `"${videoUrl}"`,
-      String(interval),
-      '--output', capturesBase,
-    ];
-    if (capture?.start !== undefined) captureArgs.push('--start', String(capture.start));
-    if (capture?.end !== undefined) captureArgs.push('--end', String(capture.end));
-    if (capture?.maxFrames !== undefined) captureArgs.push('--max-frames', String(capture.maxFrames));
-    if (startFrame > 0) captureArgs.push('--start-frame', String(startFrame));
-
-    try {
-      await runCommand('npx', ['ts-node', ...captureArgs], {
-        cwd: ytFramePocPath,
-        onStdout: (chunk) => console.log(`[capture] ${chunk.trimEnd()}`),
-        onStderr: (chunk) => console.error(`[capture] ${chunk.trimEnd()}`),
-      });
-    } catch (err) {
-      // Save partial progress before re-throwing
-      const partialDir = findCaptureDir(capturesBase, videoId);
-      const partialFrames = partialDir ? findExistingFrames(partialDir) : [];
-      state.stepStates.capture.status = 'failed';
-      state.stepStates.capture.failedAt = new Date().toISOString();
-      state.stepStates.capture.error = err.message;
-      state.stepStates.capture.framesCompleted = partialFrames.length;
-      state.stepStates.capture.lastFrame = partialFrames[partialFrames.length - 1] || null;
-      state.status = 'failed';
+      state.stepStates.capture.status = 'completed';
+      state.stepStates.capture.completedAt = new Date().toISOString();
+      state.stepStates.capture.framesCompleted = existingFrames.length;
+      state.stepStates.capture.lastFrame = existingFrames[existingFrames.length - 1] || null;
+      state.stepStates.capture.reused = true;
       savePipelineState(stateFile, state);
-      throw err;
-    }
+      job.completedSteps.push('capture');
+    } else {
+      // No existing frames — run fresh capture
+      updateStatus('running', 'Capturing frames via Playwright...', 'capture');
 
-    captureDir = findCaptureDir(capturesBase, videoId);
-    if (!captureDir) {
-      throw new Error(`Capture directory not found in ${capturesBase} for ${videoId}`);
-    }
-    job.captureDir = captureDir;
+      state.stepStates.capture.status = 'running';
+      state.stepStates.capture.startedAt = new Date().toISOString();
+      savePipelineState(stateFile, state);
 
-    const finalFrames = findExistingFrames(captureDir);
-    state.stepStates.capture.status = 'completed';
-    state.stepStates.capture.completedAt = new Date().toISOString();
-    state.stepStates.capture.framesCompleted = finalFrames.length;
-    state.stepStates.capture.lastFrame = finalFrames[finalFrames.length - 1] || null;
-    savePipelineState(stateFile, state);
-    job.completedSteps.push('capture');
-    console.log(`[orchestrator] Capture dir: ${captureDir} (${finalFrames.length} frames)`);
+      const interval = capture?.interval || 1;
+      const captureArgs = [
+        'src/index.ts',
+        `"${videoUrl}"`,
+        String(interval),
+        '--output', capturesBase,
+      ];
+      if (capture?.start !== undefined) captureArgs.push('--start', String(capture.start));
+      if (capture?.end !== undefined) captureArgs.push('--end', String(capture.end));
+      if (capture?.maxFrames !== undefined) captureArgs.push('--max-frames', String(capture.maxFrames));
+
+      try {
+        await retryWithBackoff(
+          () => runCommand('npx', ['ts-node', ...captureArgs], {
+            cwd: ytFramePocPath,
+            onStdout: (chunk) => console.log(`[capture] ${chunk.trimEnd()}`),
+            onStderr: (chunk) => console.error(`[capture] ${chunk.trimEnd()}`),
+          }),
+          {
+            maxRetries: 2,
+            baseDelayMs: 5000,
+            maxDelayMs: 30000,
+            onRetry: (attempt, err, delayMs) => {
+              const kind = classifyError(err);
+              console.log(`[orchestrator] Capture attempt failed (${kind}): ${err.message}`);
+              console.log(`[orchestrator] Retrying in ${(delayMs / 1000).toFixed(0)}s (attempt ${attempt}/2)...`);
+              updateStatus('running', `Capture failed (${kind}), retrying in ${(delayMs / 1000).toFixed(0)}s... (attempt ${attempt + 1}/3)`, 'capture');
+            },
+          }
+        );
+      } catch (err) {
+        // Save partial progress before re-throwing
+        const partialDir = findCaptureDir(capturesBase, videoId);
+        const partialFrames = partialDir ? findExistingFrames(partialDir) : [];
+        state.stepStates.capture.status = 'failed';
+        state.stepStates.capture.failedAt = new Date().toISOString();
+        state.stepStates.capture.error = err.message;
+        state.stepStates.capture.errorType = classifyError(err);
+        state.stepStates.capture.framesCompleted = partialFrames.length;
+        state.stepStates.capture.lastFrame = partialFrames[partialFrames.length - 1] || null;
+        state.status = 'failed';
+        savePipelineState(stateFile, state);
+        throw err;
+      }
+
+      captureDir = findCaptureDir(capturesBase, videoId);
+      if (!captureDir) {
+        throw new Error(`Capture directory not found in ${capturesBase} for ${videoId}`);
+      }
+      job.captureDir = captureDir;
+
+      const finalFrames = findExistingFrames(captureDir);
+      state.stepStates.capture.status = 'completed';
+      state.stepStates.capture.completedAt = new Date().toISOString();
+      state.stepStates.capture.framesCompleted = finalFrames.length;
+      state.stepStates.capture.lastFrame = finalFrames[finalFrames.length - 1] || null;
+      savePipelineState(stateFile, state);
+      job.completedSteps.push('capture');
+      console.log(`[orchestrator] Capture dir: ${captureDir} (${finalFrames.length} frames)`);
+    }
   }
 
   // --- Step 3: Analyze scenes ---
@@ -331,14 +356,18 @@ async function runPipeline(job, updateStatus) {
     console.log('[orchestrator] Skipping publish (already completed)');
     if (!job.completedSteps.includes('publish')) job.completedSteps.push('publish');
   } else {
-    updateStatus('running', 'Publishing shots to Airtable + R2...', 'publish');
+    const hasR2 = process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID;
+    const statusMsg = hasR2 
+      ? 'Publishing shots + frames to Airtable + R2...' 
+      : 'Publishing shots to Airtable...';
+    updateStatus('running', statusMsg, 'publish');
 
     state.stepStates.publish.status = 'running';
     state.stepStates.publish.startedAt = new Date().toISOString();
     savePipelineState(stateFile, state);
 
     try {
-      await runCommand(pythonBin, [
+      const publisherArgs = [
         '-m', 'publisher',
         '--capture-dir', captureDir,
         '--api-key', process.env.AIRTABLE_API_KEY,
@@ -346,7 +375,14 @@ async function runPipeline(job, updateStatus) {
         '--segment-transcripts',
         '--merge-scenes',
         '--verbose',
-      ], {
+      ];
+
+      // Enable parallel frame uploads if R2 is configured
+      if (hasR2) {
+        publisherArgs.push('--max-concurrent-uploads', '8');
+      }
+
+      await runCommand(pythonBin, publisherArgs, {
         cwd: PROJECT_ROOT,
         onStdout: (chunk) => console.log(`[publisher] ${chunk.trimEnd()}`),
         onStderr: (chunk) => console.error(`[publisher] ${chunk.trimEnd()}`),

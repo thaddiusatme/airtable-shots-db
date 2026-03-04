@@ -1,7 +1,16 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
-const { app, jobs } = require('../server');
+const { app, jobs, _internals } = require('../server');
+
+// Replace real launchPipeline with a no-op to prevent real pipeline runs
+const originalLaunch = _internals.launchPipeline;
+_internals.launchPipeline = (job, label) => {
+  // Just update status like the real one does, but don't run the pipeline
+  job.status = 'running';
+  job.message = `Pipeline started (mock${label ? `, ${label}` : ''})`;
+  job.updatedAt = new Date().toISOString();
+};
 
 let server;
 let baseUrl;
@@ -18,6 +27,9 @@ beforeEach((_, done) => {
 afterEach((_, done) => {
   server.close(done);
 });
+
+// Restore original after all tests (defensive)
+process.on('beforeExit', () => { _internals.launchPipeline = originalLaunch; });
 
 // Helper: make HTTP request and return parsed JSON
 function request(method, path, body) {
@@ -78,10 +90,11 @@ function seedJob(overrides = {}) {
 // GET /pipeline/resumable
 // ---------------------------------------------------------------------------
 describe('GET /pipeline/resumable', () => {
-  it('returns empty array when no failed jobs exist', async () => {
+  it('returns no in-memory failed jobs when none exist', async () => {
     const res = await request('GET', '/pipeline/resumable');
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, []);
+    const memoryJobs = res.body.filter(j => j.source === 'memory');
+    assert.deepEqual(memoryJobs, []);
   });
 
   it('returns failed jobs with captureDir and completedSteps', async () => {
@@ -89,11 +102,12 @@ describe('GET /pipeline/resumable', () => {
 
     const res = await request('GET', '/pipeline/resumable');
     assert.equal(res.status, 200);
-    assert.equal(res.body.length, 1);
-    assert.equal(res.body[0].runId, 'failed-1');
-    assert.equal(res.body[0].failedStep, 'capture');
-    assert.equal(res.body[0].captureDir, '/tmp/cap1');
-    assert.ok(Array.isArray(res.body[0].completedSteps));
+    const memJobs = res.body.filter(j => j.source === 'memory');
+    assert.equal(memJobs.length, 1);
+    assert.equal(memJobs[0].runId, 'failed-1');
+    assert.equal(memJobs[0].failedStep, 'capture');
+    assert.equal(memJobs[0].captureDir, '/tmp/cap1');
+    assert.ok(Array.isArray(memJobs[0].completedSteps));
   });
 
   it('excludes non-error jobs from resumable list', async () => {
@@ -103,8 +117,9 @@ describe('GET /pipeline/resumable', () => {
 
     const res = await request('GET', '/pipeline/resumable');
     assert.equal(res.status, 200);
-    assert.equal(res.body.length, 1);
-    assert.equal(res.body[0].runId, 'failed-1');
+    const memJobs = res.body.filter(j => j.source === 'memory');
+    assert.equal(memJobs.length, 1);
+    assert.equal(memJobs[0].runId, 'failed-1');
   });
 
   it('includes videoId in resumable response', async () => {

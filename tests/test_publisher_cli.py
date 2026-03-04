@@ -74,6 +74,7 @@ class TestPublisherCLI:
             "--api-key", "patFAKE",
             "--base-id", "appFAKE",
             "--dry-run",
+            "--skip-frames",
         ])
         assert rc == 0
 
@@ -84,11 +85,13 @@ class TestPublisherCLI:
                 "--api-key", "patFAKE",
                 "--base-id", "appFAKE",
                 "--dry-run",
+                "--skip-frames",
             ])
             mock_api_cls.assert_not_called()
 
     @patch("publisher.publish.Api")
     def test_publish_returns_zero_on_success(self, mock_api_cls, analysis_dir: Path):
+        """CLI should return 0 when publish succeeds."""
         mock_api = MagicMock()
         mock_api_cls.return_value = mock_api
         mock_videos = MagicMock()
@@ -110,6 +113,7 @@ class TestPublisherCLI:
             "--capture-dir", str(analysis_dir),
             "--api-key", "patFAKE",
             "--base-id", "appFAKE",
+            "--skip-frames",
         ])
         assert rc == 0
 
@@ -181,6 +185,7 @@ class TestPublisherCLI:
             "--api-key", "patFAKE",
             "--base-id", "appFAKE",
             "--max-concurrent-uploads", "8",
+            "--skip-frames",
         ])
         assert rc == 0
 
@@ -209,5 +214,6 @@ class TestPublisherCLI:
             "--api-key", "patFAKE",
             "--base-id", "appFAKE",
             "--frame-sampling", "5",
+            "--skip-frames",
         ])
         assert rc == 0

@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const { runPipeline } = require('./orchestrator');
+const { scanResumableStates, findExistingFrames } = require('./pipeline-state');
 
 const app = express();
 const PORT = process.env.PIPELINE_PORT || 3333;
@@ -22,6 +23,8 @@ app.get('/', (req, res) => {
 const jobs = new Map();
 
 // Shared helper: launch pipeline for a job (used by /run and /resume)
+// Wrapped in _internals so tests can override without triggering real pipelines
+const _internals = { launchPipeline };
 function launchPipeline(job, label = '') {
   const tag = label ? ` (${label})` : '';
   const updateStatus = (status, message, step) => {
@@ -87,7 +90,7 @@ app.post('/pipeline/run', (req, res) => {
 
   jobs.set(runId, job);
 
-  launchPipeline(job);
+  _internals.launchPipeline(job);
 
   res.json({ runId });
 });
@@ -128,10 +131,14 @@ app.get('/pipeline/jobs', (req, res) => {
   res.json(list);
 });
 
-// List failed jobs that can be resumed
+// List failed jobs that can be resumed (in-memory + disk state files)
 app.get('/pipeline/resumable', (req, res) => {
-  const resumable = Array.from(jobs.values())
-    .filter(j => j.status === 'error' && j.captureDir)
+  const PROJECT_ROOT = path.resolve(__dirname, '..');
+  const capturesBase = path.join(PROJECT_ROOT, 'captures');
+
+  // In-memory failed jobs
+  const memoryResumable = Array.from(jobs.values())
+    .filter(j => j.status === 'error')
     .map(j => ({
       runId: j.runId,
       videoId: j.input.videoId,
@@ -140,16 +147,78 @@ app.get('/pipeline/resumable', (req, res) => {
       captureDir: j.captureDir,
       error: j.error,
       updatedAt: j.updatedAt,
+      source: 'memory',
     }));
-  res.json(resumable);
+
+  // Disk-based failed states (survive server restart)
+  const diskStates = scanResumableStates(capturesBase);
+  const memoryVideoIds = new Set(memoryResumable.map(j => j.videoId));
+  const diskResumable = diskStates
+    .filter(s => !memoryVideoIds.has(s.videoId)) // avoid duplicates
+    .map(s => {
+      const completedSteps = Object.entries(s.stepStates)
+        .filter(([, v]) => v.status === 'completed')
+        .map(([k]) => k);
+      const failedStep = Object.entries(s.stepStates)
+        .find(([, v]) => v.status === 'failed');
+      return {
+        runId: s.runId,
+        videoId: s.videoId,
+        failedStep: failedStep ? failedStep[0] : null,
+        completedSteps,
+        captureDir: null,
+        error: failedStep ? failedStep[1].error : null,
+        updatedAt: s.updatedAt,
+        source: 'disk',
+      };
+    });
+
+  res.json([...memoryResumable, ...diskResumable]);
 });
 
-// Resume a failed pipeline run
+// Resume a failed pipeline run (from memory or reconstructed from disk)
 app.post('/pipeline/resume/:runId', (req, res) => {
-  const job = jobs.get(req.params.runId);
+  let job = jobs.get(req.params.runId);
+
+  // If not in memory, try to reconstruct from disk state
   if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
+    const PROJECT_ROOT = path.resolve(__dirname, '..');
+    const capturesBase = path.join(PROJECT_ROOT, 'captures');
+    const diskStates = scanResumableStates(capturesBase);
+    const diskState = diskStates.find(s => s.runId === req.params.runId);
+    if (!diskState) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Reconstruct job from disk state
+    const completedSteps = Object.entries(diskState.stepStates)
+      .filter(([, v]) => v.status === 'completed')
+      .map(([k]) => k);
+
+    job = {
+      runId: diskState.runId,
+      status: 'error',
+      step: Object.entries(diskState.stepStates).find(([, v]) => v.status === 'failed')?.[0] || null,
+      message: null,
+      error: null,
+      errorDetail: null,
+      completedSteps,
+      input: {
+        videoUrl: `https://www.youtube.com/watch?v=${diskState.videoId}`,
+        videoId: diskState.videoId,
+        skipVlm: req.body?.skipVlm || false,
+        ...(req.body?.transcript && { transcript: req.body.transcript }),
+        ...(req.body?.transcriptSegments && { transcriptSegments: req.body.transcriptSegments }),
+        capture: req.body?.capture || {},
+      },
+      captureDir: null,
+      createdAt: diskState.createdAt,
+      updatedAt: diskState.updatedAt,
+    };
+    jobs.set(job.runId, job);
+    console.log(`[server] Reconstructed job ${job.runId.slice(0, 8)} from disk state for video ${diskState.videoId}`);
   }
+
   if (job.status !== 'error') {
     return res.status(400).json({ error: 'Job is not resumable (not in error state)' });
   }
@@ -163,7 +232,7 @@ app.post('/pipeline/resume/:runId', (req, res) => {
 
   console.log(`[job:${job.runId.slice(0, 8)}] resuming from step '${job.step}'`);
 
-  launchPipeline(job, 'resumed');
+  _internals.launchPipeline(job, 'resumed');
 
   res.json({ resumed: true, runId: job.runId });
 });
@@ -195,4 +264,4 @@ if (require.main === module) {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 }
 
-module.exports = { app, jobs };
+module.exports = { app, jobs, _internals };

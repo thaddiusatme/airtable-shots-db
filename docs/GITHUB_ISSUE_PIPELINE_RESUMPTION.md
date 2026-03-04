@@ -286,7 +286,45 @@ Until resumption is implemented:
 
 ---
 
+## Update — 2026-03-02: New Capture Timeout Error
+
+**Error:** `page.waitForFunction: Timeout 30000ms exceeded` during `YouTubePlayer.initialize()` — the video metadata never loaded.
+
+```
+[orchestrator] $ npx ts-node src/index.ts "https://www.youtube.com/watch?v=2mBZeQ90HT0" 1 --output captures --max-frames 1000
+[capture] Navigating to: https://www.youtube.com/watch?v=2mBZeQ90HT0
+[capture] Waiting for video element and metadata...
+Error during capture: page.waitForFunction: Timeout 30000ms exceeded.
+[job:bff76b45] error at step 'capture': Command exited with code 1
+```
+
+**Root cause:** yt-frame-poc's `YouTubePlayer.initialize()` waits for `video.readyState >= 1 && video.duration > 0` with a 20s timeout. YouTube can be slow to load depending on network conditions, ad state, or consent dialogs.
+
+**Classification:** This is a **transient** failure — retrying typically succeeds.
+
+### Known Transient Capture Errors
+| Pattern | Cause | Retryable |
+|---|---|---|
+| `Timeout 30000ms exceeded` during `waitForFunction` | Video metadata didn't load in time | ✅ Yes |
+| `Timeout 30000ms exceeded` during `elementHandle.screenshot` | Mac sleep / browser unresponsive | ✅ Yes |
+| `net::ERR_NETWORK_CHANGED` | Network disconnected | ✅ Yes |
+| `net::ERR_INTERNET_DISCONNECTED` | No internet | ✅ Yes (with delay) |
+| `Target closed` | Browser crashed | ✅ Yes (restart browser) |
+| `Invalid YouTube URL` | Bad video ID | ❌ No — permanent |
+| `exceeds video duration` | Seek past end | ❌ No — permanent |
+
+### Implementation Status (2026-03-02)
+
+- [x] Phase 1: Basic Checkpointing — per-video `.pipeline_state_{videoId}.json`
+- [x] Phase 2: Capture Resumption — reuse existing capture dir with frames
+- [x] Phase 3: Step Skipping — skip completed steps on resume
+- [x] Phase 4: UI Integration — Resume button in Chrome extension, `/pipeline/resumable` + `/pipeline/resume` APIs
+- [x] Phase 4b: Disk Persistence — resume survives server restart via disk state scanning
+- [ ] **Phase 6: Capture Retry Logic** — auto-retry transient errors with exponential backoff
+
+---
+
 **Assignee:** TBD  
 **Milestone:** v2.0 - Production Readiness  
 **Created:** 2026-03-01  
-**Updated:** 2026-03-01
+**Updated:** 2026-03-02

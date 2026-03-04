@@ -37,8 +37,35 @@ function createInitialState(runId) {
   };
 }
 
-function stateFilePath(captureDir) {
-  return path.join(captureDir, STATE_FILENAME);
+function stateFilePath(baseDir, videoId) {
+  return path.join(baseDir, `.pipeline_state_${videoId}.json`);
+}
+
+/**
+ * Scan a directory for per-video state files and return any that are in 'failed' status.
+ * Used on server startup to reconstruct resumable jobs from disk.
+ */
+function scanResumableStates(baseDir) {
+  if (!fs.existsSync(baseDir)) return [];
+  return fs.readdirSync(baseDir)
+    .filter(f => f.startsWith('.pipeline_state_') && f.endsWith('.json'))
+    .map(f => {
+      try {
+        const raw = fs.readFileSync(path.join(baseDir, f), 'utf-8');
+        return JSON.parse(raw);
+      } catch { return null; }
+    })
+    .filter(s => {
+      if (!s || s.status !== 'failed') return false;
+      // Skip states with invalid video IDs (real YouTube IDs are 11 chars)
+      if (!s.videoId || s.videoId.length < 8) return false;
+      // Skip states older than 7 days
+      if (s.updatedAt) {
+        const age = Date.now() - new Date(s.updatedAt).getTime();
+        if (age > 7 * 24 * 60 * 60 * 1000) return false;
+      }
+      return true;
+    });
 }
 
 function loadPipelineState(stateFile, runId) {
@@ -75,4 +102,5 @@ module.exports = {
   loadPipelineState,
   findExistingFrames,
   calculateStartFrame,
+  scanResumableStates,
 };

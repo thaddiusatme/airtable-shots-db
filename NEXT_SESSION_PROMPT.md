@@ -1,4 +1,4 @@
-# Next Session Prompt — March 3, 2026
+# Next Session Prompt — March 3, 2026 (GH #18)
 
 ## What Was Accomplished This Session
 

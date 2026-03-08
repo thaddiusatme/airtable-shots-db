@@ -1,10 +1,12 @@
-"""Tests for publisher.shot_package — RED phase (TDD Iteration 3).
+"""Tests for publisher.shot_package — RED phase (TDD Iterations 3–4).
 
 Tests cover:
 - collect_shot_frames(): Gather all frames belonging to a shot in stable order
 - build_shot_package(): Assemble a complete shot package for LLM consumption
 - parse_llm_response(): Parse structured LLM output into Airtable field dict
 - SHOT_ENRICHMENT_FIELDS: Explicit mapping from LLM keys to Airtable columns
+- build_enrichment_prompt(): Build multimodal prompt payload for LLM enrichment
+- AI_PROMPT_VERSION: Prompt versioning constant
 """
 
 import json
@@ -13,7 +15,9 @@ from typing import Any
 import pytest
 
 from publisher.shot_package import (
+    AI_PROMPT_VERSION,
     SHOT_ENRICHMENT_FIELDS,
+    build_enrichment_prompt,
     build_shot_package,
     collect_shot_frames,
     parse_llm_response,
@@ -356,6 +360,169 @@ class TestParseLlmResponse:
         response = json.dumps({"scene_summary": "Intro.", "shot_type": None})
         result = parse_llm_response(response)
         assert "Shot Type" not in result
+
+
+# ---------------------------------------------------------------------------
+# SHOT_ENRICHMENT_FIELDS constant tests
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# build_enrichment_prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEnrichmentPrompt:
+    """Tests for build_enrichment_prompt() — build multimodal prompt payload."""
+
+    @pytest.fixture
+    def shot_pkg(self) -> dict[str, Any]:
+        """A typical shot package as returned by build_shot_package()."""
+        return {
+            "shot_label": "S01",
+            "video_id": "KGHoVptow30",
+            "scene_index": 0,
+            "start_timestamp": 0,
+            "end_timestamp": 5,
+            "frames": [
+                {"filename": "frame_00000_t000.000s.png", "timestamp": 0},
+                {"filename": "frame_00001_t001.000s.png", "timestamp": 1},
+                {"filename": "frame_00002_t002.000s.png", "timestamp": 2},
+                {"filename": "frame_00003_t003.000s.png", "timestamp": 3},
+                {"filename": "frame_00004_t004.000s.png", "timestamp": 4},
+                {"filename": "frame_00005_t005.000s.png", "timestamp": 5},
+            ],
+            "transcript": TRANSCRIPT_SLICE_A,
+        }
+
+    @pytest.fixture
+    def empty_pkg(self) -> dict[str, Any]:
+        """Shot package with no frames and empty transcript."""
+        return {
+            "shot_label": "S03",
+            "video_id": "KGHoVptow30",
+            "scene_index": 2,
+            "start_timestamp": 20,
+            "end_timestamp": 25,
+            "frames": [],
+            "transcript": "",
+        }
+
+    # -- Structure tests --
+
+    def test_returns_dict(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert isinstance(result, dict)
+
+    def test_has_required_keys(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        required = {"system_prompt", "user_prompt", "frame_references", "prompt_version"}
+        assert required.issubset(set(result.keys()))
+
+    # -- System prompt tests --
+
+    def test_system_prompt_is_string(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert isinstance(result["system_prompt"], str)
+
+    def test_system_prompt_requests_json_output(self, shot_pkg):
+        """System prompt must instruct the LLM to return JSON."""
+        result = build_enrichment_prompt(shot_pkg)
+        assert "JSON" in result["system_prompt"]
+
+    def test_system_prompt_references_all_enrichment_field_keys(self, shot_pkg):
+        """System prompt must mention every LLM output key from SHOT_ENRICHMENT_FIELDS."""
+        result = build_enrichment_prompt(shot_pkg)
+        for llm_key in SHOT_ENRICHMENT_FIELDS:
+            assert llm_key in result["system_prompt"], (
+                f"Missing LLM key '{llm_key}' in system prompt"
+            )
+
+    # -- User prompt tests --
+
+    def test_user_prompt_is_string(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert isinstance(result["user_prompt"], str)
+
+    def test_user_prompt_includes_transcript(self, shot_pkg):
+        """Full transcript slice must appear in the user prompt."""
+        result = build_enrichment_prompt(shot_pkg)
+        assert TRANSCRIPT_SLICE_A in result["user_prompt"]
+
+    def test_user_prompt_includes_shot_label(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert "S01" in result["user_prompt"]
+
+    def test_user_prompt_includes_timing_context(self, shot_pkg):
+        """User prompt should reference the shot's time range."""
+        result = build_enrichment_prompt(shot_pkg)
+        assert "0" in result["user_prompt"]
+        assert "5" in result["user_prompt"]
+
+    def test_user_prompt_includes_video_id(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert "KGHoVptow30" in result["user_prompt"]
+
+    # -- Frame references tests --
+
+    def test_frame_references_is_list(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert isinstance(result["frame_references"], list)
+
+    def test_frame_references_match_package_frames(self, shot_pkg):
+        """Every frame filename from the package should appear in frame_references."""
+        result = build_enrichment_prompt(shot_pkg)
+        expected = [f["filename"] for f in shot_pkg["frames"]]
+        assert result["frame_references"] == expected
+
+    def test_frame_references_preserve_order(self, shot_pkg):
+        """Frame references must maintain the same order as the shot package frames."""
+        result = build_enrichment_prompt(shot_pkg)
+        refs = result["frame_references"]
+        assert refs[0] == "frame_00000_t000.000s.png"
+        assert refs[-1] == "frame_00005_t005.000s.png"
+
+    def test_frame_count_mentioned_in_user_prompt(self, shot_pkg):
+        """User prompt should state how many frames are included."""
+        result = build_enrichment_prompt(shot_pkg)
+        assert "6" in result["user_prompt"]
+
+    # -- Prompt version tests --
+
+    def test_prompt_version_matches_constant(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert result["prompt_version"] == AI_PROMPT_VERSION
+
+    def test_prompt_version_is_string(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert isinstance(result["prompt_version"], str)
+
+    def test_ai_prompt_version_constant_is_nonempty(self):
+        """AI_PROMPT_VERSION must be a non-empty string."""
+        assert isinstance(AI_PROMPT_VERSION, str)
+        assert len(AI_PROMPT_VERSION) > 0
+
+    # -- Edge cases --
+
+    def test_empty_frames_produces_empty_frame_references(self, empty_pkg):
+        result = build_enrichment_prompt(empty_pkg)
+        assert result["frame_references"] == []
+
+    def test_empty_transcript_still_valid(self, empty_pkg):
+        """Empty transcript should not cause errors."""
+        result = build_enrichment_prompt(empty_pkg)
+        assert isinstance(result["user_prompt"], str)
+
+    def test_user_prompt_notes_no_frames_when_empty(self, empty_pkg):
+        """When no frames are available, user prompt should note this."""
+        result = build_enrichment_prompt(empty_pkg)
+        assert "0" in result["user_prompt"]  # mentions 0 frames
+
+    def test_user_prompt_notes_no_transcript_when_empty(self, empty_pkg):
+        """When transcript is empty, user prompt should indicate this."""
+        result = build_enrichment_prompt(empty_pkg)
+        prompt_lower = result["user_prompt"].lower()
+        assert "no transcript" in prompt_lower or "no dialogue" in prompt_lower
 
 
 # ---------------------------------------------------------------------------

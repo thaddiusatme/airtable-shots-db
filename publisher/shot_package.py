@@ -1,10 +1,15 @@
-"""Shot package assembly and LLM response parsing.
+"""Shot package assembly, prompt building, and LLM response parsing.
 
 Builds a complete shot package (frames + transcript) for LLM enrichment,
-and parses structured LLM output into Airtable field dicts.
+constructs the multimodal prompt payload, and parses structured LLM output
+into Airtable field dicts.
 
 Usage:
-    from publisher.shot_package import build_shot_package, collect_shot_frames, parse_llm_response
+    from publisher.shot_package import (
+        build_shot_package, collect_shot_frames,
+        build_enrichment_prompt, parse_llm_response,
+        AI_PROMPT_VERSION, SHOT_ENRICHMENT_FIELDS,
+    )
 """
 
 from __future__ import annotations
@@ -19,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Field mapping: LLM output keys → Airtable column names
+# Constants
 # ---------------------------------------------------------------------------
+
+AI_PROMPT_VERSION: str = "1.0"
+"""Tracks the prompt template revision for AI Model / AI Prompt Version fields."""
 
 SHOT_ENRICHMENT_FIELDS: dict[str, str] = {
     "scene_summary": "AI Description (Local)",
@@ -37,6 +45,71 @@ SHOT_ENRICHMENT_FIELDS: dict[str, str] = {
     "production_patterns": "Production Patterns",
     "recreation_guidance": "Recreation Guidance",
 }
+
+
+# ---------------------------------------------------------------------------
+# Prompt payload builder
+# ---------------------------------------------------------------------------
+
+
+def build_enrichment_prompt(shot_package: dict[str, Any]) -> dict[str, Any]:
+    """Build the multimodal prompt payload for LLM shot enrichment.
+
+    Produces a structured dict containing the system prompt (with JSON output
+    instructions referencing all SHOT_ENRICHMENT_FIELDS keys), a user prompt
+    (with shot context, timing, frame count, and transcript), an ordered list
+    of frame filename references, and the prompt version for tracking.
+
+    Args:
+        shot_package: Dict from build_shot_package() with keys: shot_label,
+            video_id, scene_index, start_timestamp, end_timestamp, frames,
+            transcript.
+
+    Returns:
+        Dict with keys: system_prompt, user_prompt, frame_references,
+        prompt_version.
+    """
+    # -- System prompt: instruct LLM to return structured JSON --
+    field_keys = list(SHOT_ENRICHMENT_FIELDS.keys())
+    field_list = "\n".join(f"- {key}" for key in field_keys)
+    system_prompt = (
+        "You are a professional video production analyst. "
+        "Analyze the provided video shot (frames and transcript) and return "
+        "a single JSON object with the following keys:\n\n"
+        f"{field_list}\n\n"
+        "Return ONLY valid JSON. Do not include markdown fencing, commentary, "
+        "or any text outside the JSON object. Every key must be present; use "
+        "null for fields that cannot be determined from the provided material."
+    )
+
+    # -- User prompt: shot context + transcript --
+    frames = shot_package.get("frames", [])
+    transcript = shot_package.get("transcript", "")
+    frame_count = len(frames)
+
+    transcript_section = (
+        f"Transcript:\n{transcript}"
+        if transcript
+        else "Transcript:\nNo transcript available (no dialogue in this shot)."
+    )
+
+    user_prompt = (
+        f"Shot: {shot_package['shot_label']}\n"
+        f"Video ID: {shot_package['video_id']}\n"
+        f"Time range: {shot_package['start_timestamp']}s – {shot_package['end_timestamp']}s\n"
+        f"Frames provided: {frame_count}\n\n"
+        f"{transcript_section}"
+    )
+
+    # -- Frame references: ordered filenames for multimodal attachment --
+    frame_references = [f["filename"] for f in frames]
+
+    return {
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "frame_references": frame_references,
+        "prompt_version": AI_PROMPT_VERSION,
+    }
 
 
 # ---------------------------------------------------------------------------

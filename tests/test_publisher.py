@@ -68,6 +68,49 @@ SAMPLE_ANALYSIS = {
 }
 
 
+# Sampled capture data — reproduces GH-22 scenario (5s interval, index-based filenames)
+SAMPLED_ANALYSIS_5S = {
+    "videoId": "Lwh_e2gJCN0",
+    "scenes": [
+        {
+            "sceneIndex": 0,
+            "startTimestamp": 0,
+            "endTimestamp": 10,
+            "firstFrame": "frame_00000_t000.000s.png",
+            "lastFrame": "frame_00002_t010.000s.png",
+            "description": None,
+            "transition": None,
+        },
+        {
+            "sceneIndex": 1,
+            "startTimestamp": 15,
+            "endTimestamp": 25,
+            "firstFrame": "frame_00003_t015.000s.png",
+            "lastFrame": "frame_00005_t025.000s.png",
+            "description": None,
+            "transition": None,
+        },
+    ],
+    "totalScenes": 2,
+    "analysisDate": "2026-03-08T15:35:55+00:00",
+}
+
+SAMPLED_MANIFEST_5S = {
+    "videoId": "Lwh_e2gJCN0",
+    "videoTitle": "Test Sampled Video",
+    "captureDate": "2026-02-24T22:55:22.294Z",
+    "options": {"interval": 5, "maxFrames": 100},
+    "frames": [
+        {"index": 0, "timestamp": 0, "filename": "frame_00000_t000.000s.png"},
+        {"index": 1, "timestamp": 5, "filename": "frame_00001_t005.000s.png"},
+        {"index": 2, "timestamp": 10, "filename": "frame_00002_t010.000s.png"},
+        {"index": 3, "timestamp": 15, "filename": "frame_00003_t015.000s.png"},
+        {"index": 4, "timestamp": 20, "filename": "frame_00004_t020.000s.png"},
+        {"index": 5, "timestamp": 25, "filename": "frame_00005_t025.000s.png"},
+    ],
+}
+
+
 @pytest.fixture
 def analysis_dir(tmp_path: Path) -> Path:
     """Create a temporary directory with a valid analysis.json."""
@@ -80,6 +123,19 @@ def analysis_dir(tmp_path: Path) -> Path:
 def analysis() -> dict:
     """Return a copy of the sample analysis dict."""
     return json.loads(json.dumps(SAMPLE_ANALYSIS))
+
+
+@pytest.fixture
+def sampled_capture_dir(tmp_path: Path) -> Path:
+    """Create a capture directory simulating Chrome extension 5s-interval output.
+
+    Reproduces the GH-22 scenario: index-based filenames with 5s sampling.
+    """
+    (tmp_path / "analysis.json").write_text(json.dumps(SAMPLED_ANALYSIS_5S))
+    (tmp_path / "manifest.json").write_text(json.dumps(SAMPLED_MANIFEST_5S))
+    for frame in SAMPLED_MANIFEST_5S["frames"]:
+        (tmp_path / frame["filename"]).write_bytes(b"\x89PNG dummy")
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +528,116 @@ class TestBuildFrameRecords:
 
         # Default should be same as sample_rate=1
         assert len(result) == 131
+
+
+# ---------------------------------------------------------------------------
+# GH-22 regression: sampled capture frame contract
+# ---------------------------------------------------------------------------
+
+
+class TestSampledCaptureFrameContract:
+    """GH-22 regression: publisher must handle sampled capture output correctly.
+
+    Chrome extension captures frames at configurable intervals (default 5s).
+    Capture output uses index-based filenames:
+        frame_00000_t000.000s.png  (index=0, t=0s)
+        frame_00001_t005.000s.png  (index=1, t=5s)
+        frame_00002_t010.000s.png  (index=2, t=10s)
+
+    Publisher must use actual captured filenames from manifest.json,
+    not synthesize timestamp-based filenames like frame_00005_t005.000s.png.
+    """
+
+    SHOT_RECORDS = [
+        {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+        {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+    ]
+
+    MANIFEST_FRAME_MAP = {
+        int(f["timestamp"]): f["filename"]
+        for f in SAMPLED_MANIFEST_5S["frames"]
+    }
+
+    def test_source_filename_uses_actual_capture_name(self):
+        """Frame at t=5s should use actual capture filename (index-based),
+        not synthesized timestamp-based name."""
+        result = build_frame_records(
+            SAMPLED_ANALYSIS_5S, "recVID1", self.SHOT_RECORDS, {},
+            sample_rate=5,
+            manifest_frame_map=self.MANIFEST_FRAME_MAP,
+        )
+
+        frame_at_5 = [f for f in result if f["Timestamp (sec)"] == 5][0]
+        # Actual capture file at t=5 is frame_00001 (index 1), not frame_00005
+        assert frame_at_5["Source Filename"] == "frame_00001_t005.000s.png"
+
+    def test_all_frame_filenames_exist_on_disk(self, sampled_capture_dir: Path):
+        """Every Source Filename in frame records should correspond to
+        an actual file in the capture directory."""
+        result = build_frame_records(
+            SAMPLED_ANALYSIS_5S, "recVID1", self.SHOT_RECORDS, {},
+            sample_rate=5,
+            manifest_frame_map=self.MANIFEST_FRAME_MAP,
+        )
+
+        for frame in result:
+            filename = frame["Source Filename"]
+            assert (sampled_capture_dir / filename).exists(), \
+                f"Frame record references non-existent file: {filename}"
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_publish_passes_actual_filenames_to_upload(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, sampled_capture_dir: Path,
+    ):
+        """publish_to_airtable should pass manifest-derived filenames
+        to upload_all_frames, not synthesized ones."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+        mock_frames = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            if table_name == "Frames":
+                return mock_frames
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {}},
+            {"id": "recSHOT2", "fields": {}},
+        ]
+        mock_frames.batch_create.return_value = []
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {}
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(sampled_capture_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        mock_upload_all.assert_called_once()
+        call_kwargs = mock_upload_all.call_args
+        frame_filenames = call_kwargs[1]["frame_filenames"]
+
+        # Should contain actual manifest filenames (index-based naming)
+        assert "frame_00001_t005.000s.png" in frame_filenames
+        # Should NOT contain synthesized timestamp-based filenames
+        assert "frame_00005_t005.000s.png" not in frame_filenames
+
 
 # ---------------------------------------------------------------------------
 # publish_to_airtable tests (mocked pyairtable)

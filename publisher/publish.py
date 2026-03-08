@@ -66,6 +66,55 @@ def load_analysis(capture_dir: str) -> dict[str, Any]:
     return analysis
 
 
+def resolve_frame_filename(
+    ts: int, manifest_frame_map: dict[int, str] | None
+) -> str | None:
+    """Resolve the actual frame filename for a given timestamp.
+
+    When manifest_frame_map is provided, looks up the actual captured filename.
+    Returns None if the manifest exists but the timestamp was never captured.
+    Falls back to synthesized timestamp-based naming when no manifest is available.
+
+    Args:
+        ts: Integer timestamp in seconds.
+        manifest_frame_map: Optional dict mapping timestamp → actual filename.
+
+    Returns:
+        Frame filename string, or None if the timestamp should be skipped.
+    """
+    if manifest_frame_map and ts in manifest_frame_map:
+        return manifest_frame_map[ts]
+    elif manifest_frame_map:
+        return None
+    else:
+        return f"frame_{ts:05d}_t{ts:03d}.000s.png"
+
+
+def get_manifest_frame_map(capture_dir: str) -> dict[int, str]:
+    """Load manifest.json and return a mapping of timestamp → actual filename.
+
+    Args:
+        capture_dir: Path to the capture directory containing manifest.json.
+
+    Returns:
+        Dict mapping integer timestamp (seconds) to actual frame filename.
+        Returns empty dict if manifest.json doesn't exist.
+    """
+    manifest_path = Path(capture_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return {}
+
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    frame_map: dict[int, str] = {}
+    for frame in manifest.get("frames", []):
+        ts = int(frame["timestamp"])
+        frame_map[ts] = frame["filename"]
+
+    return frame_map
+
+
 def format_timestamp_hms(seconds: float) -> str:
     """Convert seconds to H:MM:SS format.
 
@@ -165,12 +214,17 @@ def build_frame_records(
     shot_records: list[dict[str, Any]],
     r2_url_map: dict[str, str],
     sample_rate: int = 1,
+    manifest_frame_map: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build list of Frame record field dicts from analysis.
 
     For each shot's time range [startTimestamp, endTimestamp], generates one
     Frame record per sample_rate seconds. Each frame is linked to its parent Shot
     and Video records.
+
+    When manifest_frame_map is provided, uses actual captured filenames from
+    the manifest instead of synthesizing timestamp-based names. Timestamps
+    not found in the manifest are skipped (they were never captured).
 
     Args:
         analysis: Parsed analysis dict with scenes.
@@ -179,6 +233,9 @@ def build_frame_records(
             in the same order as analysis["scenes"].
         r2_url_map: Dict mapping frame filename → R2 public URL.
         sample_rate: Create frames every N seconds (default: 1 = every second).
+        manifest_frame_map: Optional dict mapping timestamp (int) → actual
+            filename from manifest.json. When provided, only timestamps
+            present in the map produce Frame records.
 
     Returns:
         List of field dicts ready for Airtable batch_create on the Frames table.
@@ -199,7 +256,9 @@ def build_frame_records(
             if frame_key in frames_by_key:
                 continue
                 
-            filename = f"frame_{ts:05d}_t{ts:03d}.000s.png"
+            filename = resolve_frame_filename(ts, manifest_frame_map)
+            if filename is None:
+                continue
 
             record: dict[str, Any] = {
                 "Frame Key": frame_key,
@@ -380,13 +439,18 @@ def publish_to_airtable(
                         "Deleted %d existing Frame records", len(existing_frame_ids)
                     )
 
-            # Generate frame filenames (respecting sample rate)
+            # Load manifest for actual frame filenames
+            manifest_frame_map = get_manifest_frame_map(capture_dir)
+
+            # Generate frame filenames (manifest-driven when available)
             frame_filenames = []
             for scene in analysis["scenes"]:
                 start = int(scene["startTimestamp"])
                 end = int(scene["endTimestamp"])
                 for ts in range(start, end + 1, frame_sample_rate):
-                    frame_filenames.append(f"frame_{ts:05d}_t{ts:03d}.000s.png")
+                    filename = resolve_frame_filename(ts, manifest_frame_map)
+                    if filename is not None:
+                        frame_filenames.append(filename)
 
             # Upload all frames to R2 (reuse s3_client from scene uploads)
             frame_url_map = upload_all_frames(
@@ -400,7 +464,9 @@ def publish_to_airtable(
 
             # Build and create Frame records
             frame_records = build_frame_records(
-                analysis, video_record_id, created, frame_url_map, sample_rate=frame_sample_rate
+                analysis, video_record_id, created, frame_url_map,
+                sample_rate=frame_sample_rate,
+                manifest_frame_map=manifest_frame_map or None,
             )
             created_frames = frames_table.batch_create(frame_records)
             frames_created_count = len(created_frames)

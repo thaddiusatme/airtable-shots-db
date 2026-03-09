@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pyairtable import Api
 
@@ -292,12 +293,19 @@ def publish_to_airtable(
     skip_frames: bool = False,
     max_workers: int = 1,
     frame_sample_rate: int = 1,
+    enrich_shots: bool = False,
+    enrich_fn: Callable[[dict[str, Any]], str] | None = None,
+    enrich_model: str = "",
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
     Reads analysis.json, upserts a Video record, and creates Shot records
     (one per scene). If r2_config is provided, uploads boundary frame
     images to R2 and attaches them as Scene Start / Scene End.
+
+    When enrich_shots is True and enrich_fn is provided, each shot is
+    packaged with its frames and transcript, sent to the LLM via enrich_fn,
+    and the parsed response is written back to the shot record.
 
     Idempotent: re-running deletes existing Shot records for the video
     before creating new ones.
@@ -308,9 +316,14 @@ def publish_to_airtable(
         base_id: Airtable base ID (e.g., "appXYZ...").
         dry_run: If True, preview what would be published without writing.
         r2_config: Optional R2 configuration for image uploads.
+        enrich_shots: If True, run LLM enrichment on each shot after creation.
+        enrich_fn: Callable that takes a prompt payload dict and returns a
+            raw LLM response string. Required when enrich_shots is True.
+        enrich_model: Model name for AI Model field tracking.
 
     Returns:
-        Summary dict with video_record_id, shots_created, video_id.
+        Summary dict with video_record_id, shots_created, video_id,
+        frames_created, and shots_enriched (when enrichment is enabled).
 
     Raises:
         PublisherError: On validation errors or Airtable API failures.
@@ -472,11 +485,64 @@ def publish_to_airtable(
             frames_created_count = len(created_frames)
             logger.info("Created %d Frame records", frames_created_count)
 
+        # Enrich shots with LLM analysis if requested
+        shots_enriched_count = 0
+        if enrich_shots and enrich_fn:
+            from publisher.shot_package import (
+                AI_PROMPT_VERSION,
+                build_enrichment_prompt,
+                build_shot_package,
+                collect_shot_frames,
+                parse_llm_response,
+            )
+
+            manifest_frame_map_enrich = get_manifest_frame_map(capture_dir)
+
+            for i, shot_record in enumerate(created):
+                scene = analysis["scenes"][i]
+                try:
+                    frames = collect_shot_frames(
+                        scene,
+                        manifest_frame_map_enrich or None,
+                        sample_rate=frame_sample_rate,
+                    )
+                    transcript = scene_transcripts.get(i, "")
+                    package = build_shot_package(
+                        scene, frames, transcript, video_id
+                    )
+                    prompt = build_enrichment_prompt(package)
+                    raw_response = enrich_fn(prompt)
+                    fields = parse_llm_response(raw_response)
+                    fields["AI Prompt Version"] = AI_PROMPT_VERSION
+                    fields["AI Updated At"] = (
+                        datetime.now(timezone.utc).isoformat()
+                    )
+                    if enrich_model:
+                        fields["AI Model"] = enrich_model
+                    shots_table.update(shot_record["id"], fields)
+                    shots_enriched_count += 1
+                    logger.info(
+                        "Enriched shot %s (%s)",
+                        shot_record["id"],
+                        scene.get("sceneIndex", i),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Enrichment failed for shot %s: %s",
+                        shot_record["id"],
+                        e,
+                    )
+                    shots_table.update(
+                        shot_record["id"],
+                        {"AI Error": f"Enrichment failed: {e}"},
+                    )
+
         return {
             "video_record_id": video_record_id,
             "video_id": video_id,
             "shots_created": len(created),
             "frames_created": frames_created_count,
+            "shots_enriched": shots_enriched_count,
         }
 
     except PublisherError:

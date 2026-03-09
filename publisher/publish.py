@@ -38,6 +38,23 @@ class PublisherError(Exception):
     pass
 
 
+def is_shot_enriched(fields: dict[str, Any]) -> bool:
+    """Check whether a shot record has already been enriched.
+
+    A shot is considered enriched if it has a truthy AI Prompt Version field,
+    indicating a previous successful LLM enrichment pass. Shots with only
+    AI Error (no AI Prompt Version) are NOT considered enriched and remain
+    eligible for retry.
+
+    Args:
+        fields: Airtable field dict from a Shot record.
+
+    Returns:
+        True if the shot was already successfully enriched.
+    """
+    return bool(fields.get("AI Prompt Version"))
+
+
 def load_analysis(capture_dir: str) -> dict[str, Any]:
     """Load and parse analysis.json from a capture directory.
 
@@ -421,9 +438,22 @@ def publish_to_airtable(
         # Delete existing shots for idempotency.
         # Linked record fields can't be queried by record ID in formulas,
         # so read the reverse-link "Shots" field from the Video record.
+        # Before deleting, read old shot records to preserve enrichment state.
+        old_enrichment_by_label: dict[str, dict[str, Any]] = {}
         if existing_videos:
             existing_shot_ids = existing_videos[0]["fields"].get("Shots", [])
             if existing_shot_ids:
+                if enrich_shots and enrich_fn:
+                    for shot_id in existing_shot_ids:
+                        old_record = shots_table.get(shot_id)
+                        old_fields = old_record.get("fields", {})
+                        label = old_fields.get("Shot Label", "")
+                        if label:
+                            old_enrichment_by_label[label] = old_fields
+                    logger.info(
+                        "Read %d old shot records for enrichment state",
+                        len(old_enrichment_by_label),
+                    )
                 shots_table.batch_delete(existing_shot_ids)
                 logger.info(
                     "Deleted %d existing Shot records", len(existing_shot_ids)
@@ -487,19 +517,47 @@ def publish_to_airtable(
 
         # Enrich shots with LLM analysis if requested
         shots_enriched_count = 0
+        shots_skipped_count = 0
         if enrich_shots and enrich_fn:
             from publisher.shot_package import (
                 AI_PROMPT_VERSION,
+                SHOT_ENRICHMENT_FIELDS,
                 build_enrichment_prompt,
                 build_shot_package,
                 collect_shot_frames,
                 parse_llm_response,
             )
 
+            # Field names that should be preserved from old enrichment
+            enrichment_preserve_fields = set(SHOT_ENRICHMENT_FIELDS.values()) | {
+                "AI Prompt Version", "AI Updated At", "AI Model", "AI JSON",
+            }
+
             manifest_frame_map_enrich = get_manifest_frame_map(capture_dir)
 
             for i, shot_record in enumerate(created):
                 scene = analysis["scenes"][i]
+                shot_label = f"S{scene['sceneIndex'] + 1:02d}"
+
+                # Check if old shot was already enriched
+                old_fields = old_enrichment_by_label.get(shot_label, {})
+
+                if is_shot_enriched(old_fields):
+                    # Copy old enrichment fields to new shot record
+                    preserved = {
+                        k: v for k, v in old_fields.items()
+                        if k in enrichment_preserve_fields and v is not None
+                    }
+                    if preserved:
+                        shots_table.update(shot_record["id"], preserved)
+                    shots_skipped_count += 1
+                    logger.info(
+                        "Skipped enrichment for shot %s (%s) — already enriched",
+                        shot_record["id"],
+                        shot_label,
+                    )
+                    continue
+
                 try:
                     frames = collect_shot_frames(
                         scene,
@@ -543,6 +601,7 @@ def publish_to_airtable(
             "shots_created": len(created),
             "frames_created": frames_created_count,
             "shots_enriched": shots_enriched_count,
+            "shots_skipped_enrichment": shots_skipped_count,
         }
 
     except PublisherError:

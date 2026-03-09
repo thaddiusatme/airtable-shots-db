@@ -22,6 +22,7 @@ from publisher.publish import (
     build_shot_records,
     build_video_fields,
     format_timestamp_hms,
+    is_shot_enriched,
     load_analysis,
     publish_to_airtable,
 )
@@ -1327,3 +1328,344 @@ class TestEnrichmentIntegration:
         )
 
         assert result["shots_enriched"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Enrichment idempotency tests (skip already-enriched shots on re-run)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentIdempotency:
+    """Tests for idempotent enrichment: skip already-enriched shots on re-run.
+
+    When publish_to_airtable re-runs on a video whose shots were already
+    enriched, it should:
+      - Read old shot records before deleting them
+      - Detect which shots are already enriched (AI Prompt Version present)
+      - Skip the LLM call for those shots
+      - Copy old enrichment fields to the new shot records
+      - Still enrich shots that were not previously enriched
+      - Treat AI Error-only shots (no AI Prompt Version) as eligible for retry
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    # Fields that signal a shot was successfully enriched
+    ENRICHED_FIELDS = {
+        "AI Prompt Version": "1.0",
+        "AI Updated At": "2026-03-01T00:00:00+00:00",
+        "AI Model": "gpt-4o",
+        "Shot Type": "Medium Shot",
+        "Camera Angle": "Eye Level",
+        "How It Is Shot": "Medium shot, static camera",
+        "AI JSON": '{"shot_type": "Medium Shot"}',
+    }
+
+    def _setup_mocks_with_existing_enriched_shots(
+        self, mock_api_cls, old_shot_fields_list
+    ):
+        """Set up mock Api with an existing video and old shot records.
+
+        Args:
+            mock_api_cls: Patched Api class.
+            old_shot_fields_list: List of field dicts for old shot records
+                (one per shot, matched by index to analysis scenes).
+
+        Returns:
+            Tuple of (mock_api, mock_videos, mock_shots).
+        """
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Build old shot records with enrichment data
+        old_shot_ids = [f"recOLD{i+1}" for i in range(len(old_shot_fields_list))]
+        old_records = {
+            old_shot_ids[i]: {
+                "id": old_shot_ids[i],
+                "fields": old_shot_fields_list[i],
+            }
+            for i in range(len(old_shot_fields_list))
+        }
+
+        # Existing video with reverse-link to old shots
+        mock_videos.all.return_value = [{
+            "id": "recVID1",
+            "fields": {
+                "Video ID": "KGHoVptow30",
+                "Shots": old_shot_ids,
+            },
+        }]
+
+        # Old shot records readable via get()
+        mock_shots.get.side_effect = lambda rid: old_records[rid]
+
+        # New shots created after deletion
+        mock_shots.batch_create.return_value = [
+            {"id": f"recNEW{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    # -- Skip already-enriched shots --
+
+    @patch("publisher.publish.Api")
+    def test_skips_enrichment_for_already_enriched_shots(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_fn should NOT be called when all shots are already enriched."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        enrich_fn.assert_not_called()
+
+    @patch("publisher.publish.Api")
+    def test_mixed_batch_only_enriches_unenriched(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """In a mixed batch, enrich_fn should only be called for unenriched shots."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # enriched
+            {"Shot Label": "S02"},                            # NOT enriched
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},  # enriched
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert enrich_fn.call_count == 1
+
+    # -- AI Error eligible for retry --
+
+    @patch("publisher.publish.Api")
+    def test_ai_error_shot_eligible_for_retry(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Shots with AI Error but no AI Prompt Version should be re-enriched."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},                   # enriched
+            {"Shot Label": "S02", "AI Error": "Enrichment failed: timeout"}, # failed → retry
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},                   # enriched
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # Only the failed shot (S02) should be re-enriched
+        assert enrich_fn.call_count == 1
+
+    # -- Preserve old enrichment on new records --
+
+    @patch("publisher.publish.Api")
+    def test_preserves_old_enrichment_on_new_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Enrichment fields from old shots should be copied to new shot records."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # Each new shot should be updated with old enrichment fields
+        assert mock_shots.update.call_count == 3
+        first_update = mock_shots.update.call_args_list[0]
+        record_id, fields = first_update[0]
+        assert record_id == "recNEW1"
+        assert fields.get("Shot Type") == "Medium Shot"
+        assert fields.get("AI Prompt Version") == "1.0"
+
+    # -- Summary reporting --
+
+    @patch("publisher.publish.Api")
+    def test_summary_includes_shots_skipped(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Result summary should include shots_skipped_enrichment count."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # enriched → skip
+            {**self.ENRICHED_FIELDS, "Shot Label": "S02"},  # enriched → skip
+            {"Shot Label": "S03"},                            # NOT enriched → enrich
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert "shots_skipped_enrichment" in result
+        assert result["shots_skipped_enrichment"] == 2
+
+    @patch("publisher.publish.Api")
+    def test_summary_enriched_plus_skipped_equals_total(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """shots_enriched + shots_skipped_enrichment should equal total shots."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # skip
+            {"Shot Label": "S02"},                            # enrich
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},  # skip
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        total = result["shots_enriched"] + result["shots_skipped_enrichment"]
+        assert total == 3
+
+    # -- Backward compatibility guards (should PASS in RED phase) --
+
+    @patch("publisher.publish.Api")
+    def test_new_video_enriches_all_shots(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """New video (no existing shots) should enrich all shots normally."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": f"recSHOT{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert enrich_fn.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_enrich_disabled_ignores_old_enrichment_state(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_shots=False should work normally regardless of old shot state."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=False,
+        )
+
+        mock_shots.update.assert_not_called()
+        assert result["shots_created"] == 3
+
+
+# ---------------------------------------------------------------------------
+# is_shot_enriched unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsAlreadyEnriched:
+    """Unit tests for is_shot_enriched() — the skip decision helper."""
+
+    def test_enriched_with_prompt_version(self):
+        assert is_shot_enriched({"AI Prompt Version": "1.0"}) is True
+
+    def test_not_enriched_empty_fields(self):
+        assert is_shot_enriched({}) is False
+
+    def test_not_enriched_with_ai_error_only(self):
+        """AI Error without AI Prompt Version means failed — eligible for retry."""
+        assert is_shot_enriched({"AI Error": "timeout"}) is False
+
+    def test_enriched_with_both_prompt_version_and_error(self):
+        """AI Prompt Version takes precedence — shot is considered enriched."""
+        assert is_shot_enriched({
+            "AI Prompt Version": "1.0",
+            "AI Error": "partial response",
+        }) is True
+
+    def test_not_enriched_with_empty_prompt_version(self):
+        """Empty string AI Prompt Version is falsy — not enriched."""
+        assert is_shot_enriched({"AI Prompt Version": ""}) is False
+
+    def test_not_enriched_with_none_prompt_version(self):
+        """None AI Prompt Version is falsy — not enriched."""
+        assert is_shot_enriched({"AI Prompt Version": None}) is False

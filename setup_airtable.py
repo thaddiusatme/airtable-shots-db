@@ -239,10 +239,51 @@ def add_frames_table(base_id):
     print("✅ Frames table created with all fields!")
 
 
+ENRICHMENT_FIELD_DEFINITIONS = [
+    {"name": "How It Is Shot", "type": "multilineText"},
+    {"name": "Frame Progression", "type": "multilineText"},
+    {"name": "Production Patterns", "type": "multilineText"},
+    {"name": "Recreation Guidance", "type": "multilineText"},
+]
+"""Field definitions for the 4 LLM enrichment fields added to the Shots table."""
+
+
+def add_enrichment_fields(base_id):
+    """Add LLM enrichment fields to the Shots table in an EXISTING Airtable base.
+
+    This function NEVER calls workspace.create_base() or base.create_table().
+    It only adds missing enrichment fields to the existing Shots table.
+
+    Idempotent: fields that already exist are skipped silently.
+    """
+    base = api.base(base_id)
+    schema = base.schema()
+
+    # Find the Shots table and its existing field names
+    shots_table = next(t for t in schema.tables if t.name == "Shots")
+    shots_table_id = shots_table.id
+    existing_field_names = {f.name for f in shots_table.fields}
+
+    # Add only the fields that don't already exist
+    added = 0
+    for field_def in ENRICHMENT_FIELD_DEFINITIONS:
+        if field_def["name"] not in existing_field_names:
+            create_field(base_id, shots_table_id, field_def)
+            added += 1
+
+    if added:
+        print(f"✅ Added {added} enrichment field(s) to Shots table.")
+    else:
+        print("⚠️  All enrichment fields already exist — skipping.")
+
+
 if __name__ == "__main__":
     import sys
     if "--add-frames-only" in sys.argv:
         base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
         add_frames_table(base_id)
+    elif "--add-enrichment-fields" in sys.argv:
+        base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
+        add_enrichment_fields(base_id)
     else:
         build_schema()

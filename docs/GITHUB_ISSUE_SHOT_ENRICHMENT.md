@@ -2,8 +2,26 @@
 
 **Title:** Implement Shot-Level LLM Enrichment for Airtable Shot Records  
 **Labels:** `enhancement`, `enrichment`, `llm`, `publisher`, `airtable`  
-**Priority:** P1 — Core Feature  
+**Priority:** P1 — Core Implemented, Production Wiring Pending  
 **Branches:** `feature/shot-package-llm-enrichment`, `feature/airtable-shot-enrichment-schema`, `feature/airtable-shot-enrichment-idempotency`
+
+---
+
+## Status Summary
+
+The core GH-23 enrichment architecture is implemented and test-covered:
+
+- shot package assembly
+- prompt payload generation
+- publisher integration
+- schema alignment for the 4 new multiline enrichment fields
+- idempotent re-run behavior that preserves old enrichment
+
+The main follow-up work is production wiring:
+
+- real LLM client adapter
+- CLI exposure for enrichment
+- optional force re-enrichment / prompt-version-aware re-enrichment
 
 ---
 
@@ -37,21 +55,21 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 
 ### LLM Output Fields (13)
 
-| Airtable Column | LLM Key | Type | Description |
+| Airtable Column | LLM Key | Schema Note | Description |
 |---|---|---|---|
-| AI Description (Local) | `scene_summary` | Long text | Brief description of the shot |
-| How It Is Shot | `how_it_is_shot` | Long text | Camera technique narrative |
-| Shot Type | `shot_type` | Single line | e.g., Medium Shot, Close-Up |
-| Camera Angle | `camera_angle` | Single line | e.g., Eye Level, High Angle |
-| Movement | `movement` | Single line | e.g., Static, Pan, Dolly |
-| Lighting | `lighting` | Single line | e.g., Studio, Natural |
-| Setting | `setting` | Single line | e.g., Home studio, Outdoors |
-| Subject | `subject` | Single line | e.g., Speaker, Product |
-| On-screen Text | `on_screen_text` | Single line | Visible text in frames |
-| Shot Function | `shot_function` | Single line | e.g., Introduction, B-Roll |
-| Frame Progression | `frame_progression` | Long text | How frames evolve over time |
-| Production Patterns | `production_patterns` | Long text | Repeatable production techniques |
-| Recreation Guidance | `recreation_guidance` | Long text | How to recreate this shot |
+| AI Description (Local) | `scene_summary` | Existing field | Brief description of the shot |
+| How It Is Shot | `how_it_is_shot` | Added by GH-23 helper (`multilineText`) | Camera technique narrative |
+| Shot Type | `shot_type` | Existing field in `Shots` schema | e.g., Medium Shot, Close-Up |
+| Camera Angle | `camera_angle` | Existing field in `Shots` schema | e.g., Eye Level, High Angle |
+| Movement | `movement` | Existing field in `Shots` schema | e.g., Static, Pan, Dolly |
+| Lighting | `lighting` | Existing field in `Shots` schema | e.g., Studio, Natural |
+| Setting | `setting` | Existing field in `Shots` schema | e.g., Home studio, Outdoors |
+| Subject | `subject` | Existing field in `Shots` schema | e.g., Speaker, Product |
+| On-screen Text | `on_screen_text` | Existing field in `Shots` schema | Visible text in frames |
+| Shot Function | `shot_function` | Existing field in `Shots` schema | e.g., Introduction, B-Roll |
+| Frame Progression | `frame_progression` | Added by GH-23 helper (`multilineText`) | How frames evolve over time |
+| Production Patterns | `production_patterns` | Added by GH-23 helper (`multilineText`) | Repeatable production techniques |
+| Recreation Guidance | `recreation_guidance` | Added by GH-23 helper (`multilineText`) | How to recreate this shot |
 
 ### AI Metadata Fields (4)
 
@@ -100,7 +118,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 **Commit:** `45bc4f2` | **Branch:** `feature/airtable-shot-enrichment-schema`
 
 - `ENRICHMENT_FIELD_DEFINITIONS` constant in `setup_airtable.py`
-- `add_enrichment_fields(base_id)` — adds 4 missing fields:
+- `add_enrichment_fields(base_id)` — adds the 4 new GH-23 multiline fields that were not already present in the base:
   - How It Is Shot, Frame Progression, Production Patterns, Recreation Guidance
 - Field-level idempotency (skips fields that already exist)
 - `--add-enrichment-fields` CLI flag
@@ -168,20 +186,12 @@ publish_to_airtable(enrich_shots=True, enrich_fn=my_llm_fn)
 
 ## CLI Usage
 
-```bash
-# Publish with enrichment
-.venv/bin/python -m publisher \
-  --capture-dir ./captures/abc123 \
-  --api-key "$AIRTABLE_API_KEY" \
-  --base-id "$AIRTABLE_BASE_ID" \
-  --enrich-shots \
-  --enrich-model "gpt-4o"
+The schema helper is available from the command line today. The publisher enrichment path is currently available through `publish_to_airtable()` parameters, but a production-ready CLI LLM adapter is still pending.
 
+```bash
 # Add missing enrichment fields to Airtable schema
-.venv/bin/python -m setup_airtable \
-  --api-key "$AIRTABLE_API_KEY" \
-  --base-id "$AIRTABLE_BASE_ID" \
-  --add-enrichment-fields
+AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
+.venv/bin/python setup_airtable.py --add-enrichment-fields
 ```
 
 ---
@@ -193,7 +203,7 @@ publish_to_airtable(enrich_shots=True, enrich_fn=my_llm_fn)
 - [ ] **`--force-reenrich` CLI flag** — bypass skip logic, re-enrich all shots
 - [ ] **Prompt version-aware re-enrichment** — auto re-enrich when `AI_PROMPT_VERSION` changes
 - [ ] **End-to-end validation** — test with real LLM API (OpenAI / Anthropic / local Ollama)
-- [ ] **CLI wiring for `--enrich-shots`** — flag defined but `enrich_fn` not yet wired to a real LLM client in `cli.py`
+- [ ] **CLI wiring for enrichment** — `publish_to_airtable()` supports enrichment params, but `publisher/cli.py` does not yet expose a production-ready LLM adapter path
 - [ ] **Chrome extension integration** — trigger enrichment from extension pipeline
 - [ ] **Cost/rate limiting** — track token usage, add configurable rate limits
 - [ ] **Batch enrichment** — enrich shots from multiple videos in one run
@@ -237,6 +247,6 @@ publish_to_airtable(enrich_shots=True, enrich_fn=my_llm_fn)
 
 ## Related
 
-- `CURRENT_STATE.md` — Project plan (enrichment listed under P2)
+- `CURRENT_STATE.md` — Current project state (updated to reflect GH-23 core completion and remaining follow-up work)
 - `ISSUE_SHOT_LIST_PIPELINE.md` — Original shot list pipeline spec
 - `docs/GITHUB_ISSUE_CI_DEVELOPER_EXPERIENCE.md` — CI/DX framework (separate track)

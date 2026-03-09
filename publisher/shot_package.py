@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-AI_PROMPT_VERSION: str = "1.0"
+AI_PROMPT_VERSION: str = "1.1"
 """Tracks the prompt template revision for AI Model / AI Prompt Version fields."""
 
 SHOT_ENRICHMENT_FIELDS: dict[str, str] = {
@@ -46,6 +46,45 @@ SHOT_ENRICHMENT_FIELDS: dict[str, str] = {
     "production_patterns": "Production Patterns",
     "recreation_guidance": "Recreation Guidance",
 }
+
+CONTROLLED_VOCAB_GUIDANCE: str = (
+    "Use these Airtable-safe value rules for controlled fields:\n"
+    "- shot_type: choose exactly one of Wide, Medium, Close-up, POV, OTS, Insert, Establishing, Screen, Drone, Other.\n"
+    "- camera_angle: choose exactly one of Eye-level, High, Low, Top-down, Dutch, Other.\n"
+    "- movement: return a JSON array of zero or more values chosen from Static, Pan, Tilt, Push-in, Pull-out, Handheld, Gimbal, Zoom, Whip-pan, Other. If there is no visible camera motion, use [\"Static\"].\n"
+    "- lighting: choose exactly one of Natural-soft, Natural-hard, Studio-soft, Backlit, Mixed, Neon, Other.\n"
+    "- shot_function: choose exactly one of Hook, Proof, Payoff, B-roll, Transition, CTA, Other.\n"
+    "If unsure for any controlled field, use \"Other\"."
+)
+
+NARRATIVE_FIELD_GUIDANCE: str = (
+    "The following fields MUST always be plain strings (never arrays, objects, or numbers):\n"
+    "scene_summary, how_it_is_shot, setting, subject, on_screen_text, "
+    "frame_progression, production_patterns, recreation_guidance.\n"
+    "If a field has multiple items, combine them into a single comma-separated string."
+)
+
+_SINGLE_SELECT_NORMALIZERS: dict[str, tuple[str, ...]] = {
+    "shot_type": ("Wide", "Medium", "Close-up", "POV", "OTS", "Insert", "Establishing", "Screen", "Drone", "Other"),
+    "camera_angle": ("Eye-level", "High", "Low", "Top-down", "Dutch", "Other"),
+    "lighting": ("Natural-soft", "Natural-hard", "Studio-soft", "Backlit", "Mixed", "Neon", "Other"),
+    "shot_function": ("Hook", "Proof", "Payoff", "B-roll", "Transition", "CTA", "Other"),
+}
+
+_MOVEMENT_CHOICES: tuple[str, ...] = (
+    "Static", "Pan", "Tilt", "Push-in", "Pull-out", "Handheld", "Gimbal", "Zoom", "Whip-pan", "Other"
+)
+
+_NARRATIVE_FIELDS: frozenset[str] = frozenset({
+    "scene_summary",
+    "how_it_is_shot",
+    "setting",
+    "subject",
+    "on_screen_text",
+    "frame_progression",
+    "production_patterns",
+    "recreation_guidance",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +117,8 @@ def build_enrichment_prompt(shot_package: dict[str, Any]) -> dict[str, Any]:
         "Analyze the provided video shot (frames and transcript) and return "
         "a single JSON object with the following keys:\n\n"
         f"{field_list}\n\n"
+        f"{CONTROLLED_VOCAB_GUIDANCE}\n\n"
+        f"{NARRATIVE_FIELD_GUIDANCE}\n\n"
         "Return ONLY valid JSON. Do not include markdown fencing, commentary, "
         "or any text outside the JSON object. Every key must be present; use "
         "null for fields that cannot be determined from the provided material."
@@ -206,6 +247,167 @@ def _normalize_llm_json_response(raw_response: str) -> str:
     return normalized
 
 
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value).strip())
+
+
+def _normalize_shot_type(value: Any) -> str:
+    text = _normalize_text(value)
+    lower = text.lower()
+    if not lower:
+        return ""
+    if "medium" in lower:
+        return "Medium"
+    if "close" in lower:
+        return "Close-up"
+    if "wide" in lower:
+        return "Wide"
+    if "over the shoulder" in lower or lower == "ots" or " o.t.s" in lower:
+        return "OTS"
+    if "pov" in lower or "point of view" in lower:
+        return "POV"
+    if "insert" in lower:
+        return "Insert"
+    if "establish" in lower:
+        return "Establishing"
+    if "screen" in lower:
+        return "Screen"
+    if "drone" in lower or "aerial" in lower:
+        return "Drone"
+    return "Other"
+
+
+def _normalize_camera_angle(value: Any) -> str:
+    text = _normalize_text(value)
+    lower = text.lower()
+    if not lower:
+        return ""
+    if "eye" in lower and "level" in lower:
+        return "Eye-level"
+    if "top" in lower and "down" in lower:
+        return "Top-down"
+    if "high" in lower:
+        return "High"
+    if "low" in lower:
+        return "Low"
+    if "dutch" in lower or "canted" in lower or "tilted horizon" in lower:
+        return "Dutch"
+    return "Other"
+
+
+def _normalize_lighting(value: Any) -> str:
+    text = _normalize_text(value)
+    lower = text.lower()
+    if not lower:
+        return ""
+    if "studio" in lower or "three-point" in lower or "softbox" in lower:
+        return "Studio-soft"
+    if "backlit" in lower or "silhouette" in lower:
+        return "Backlit"
+    if "mixed" in lower or ("natural" in lower and "practical" in lower):
+        return "Mixed"
+    if "neon" in lower or "rgb" in lower or "cyberpunk" in lower:
+        return "Neon"
+    if "natural" in lower:
+        if "hard" in lower or "harsh" in lower or "direct sun" in lower:
+            return "Natural-hard"
+        return "Natural-soft"
+    return "Other"
+
+
+def _normalize_shot_function(value: Any) -> str:
+    text = _normalize_text(value)
+    lower = text.lower()
+    if not lower:
+        return ""
+    if "hook" in lower or "cold open" in lower or "intro" in lower or "opening" in lower:
+        return "Hook"
+    if "proof" in lower or "demo" in lower or "example" in lower or "explanation" in lower:
+        return "Proof"
+    if "payoff" in lower or "result" in lower or "reveal" in lower or "conclusion" in lower:
+        return "Payoff"
+    if "b-roll" in lower or "b roll" in lower or "cutaway" in lower:
+        return "B-roll"
+    if "transition" in lower or "bridge" in lower:
+        return "Transition"
+    if "cta" in lower or "call to action" in lower or "subscribe" in lower:
+        return "CTA"
+    return "Other"
+
+
+def _normalize_movement(value: Any) -> list[str]:
+    if isinstance(value, list):
+        text = " ".join(_normalize_text(item) for item in value if _normalize_text(item))
+    else:
+        text = _normalize_text(value)
+    lower = text.lower()
+    if not lower:
+        return []
+
+    movement_values: list[str] = []
+
+    def add(choice: str) -> None:
+        if choice not in movement_values:
+            movement_values.append(choice)
+
+    if any(token in lower for token in ("still image", "still frame", "no movement", "static", "locked off", "locked-off")):
+        add("Static")
+    if "whip-pan" in lower or "whip pan" in lower:
+        add("Whip-pan")
+    if "push-in" in lower or "push in" in lower or "dolly in" in lower:
+        add("Push-in")
+    if "pull-out" in lower or "pull out" in lower or "dolly out" in lower:
+        add("Pull-out")
+    if "handheld" in lower:
+        add("Handheld")
+    if "gimbal" in lower or "stabilized" in lower or "stabilised" in lower:
+        add("Gimbal")
+    if "zoom" in lower:
+        add("Zoom")
+    if re.search(r"\bpan(?:ning)?\b", lower):
+        add("Pan")
+    if re.search(r"\btilt(?:ing)?\b", lower):
+        add("Tilt")
+
+    if movement_values:
+        return movement_values
+    return ["Other"]
+
+
+def _coerce_to_string(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, list):
+                parts.extend(str(sub) for sub in item)
+            else:
+                parts.append(str(item))
+        return ", ".join(parts)
+    if isinstance(value, dict):
+        return ", ".join(str(v) for v in value.values())
+    return str(value)
+
+
+def _normalize_controlled_value(llm_key: str, value: Any) -> Any:
+    if llm_key == "shot_type":
+        return _normalize_shot_type(value)
+    if llm_key == "camera_angle":
+        return _normalize_camera_angle(value)
+    if llm_key == "lighting":
+        return _normalize_lighting(value)
+    if llm_key == "shot_function":
+        return _normalize_shot_function(value)
+    if llm_key == "movement":
+        return _normalize_movement(value)
+    if llm_key in _NARRATIVE_FIELDS:
+        return _coerce_to_string(value)
+    return value
+
+
 def parse_llm_response(raw_response: str) -> dict[str, Any]:
     """Parse structured LLM output into an Airtable field dict.
 
@@ -234,6 +436,8 @@ def parse_llm_response(raw_response: str) -> dict[str, Any]:
     for llm_key, airtable_col in SHOT_ENRICHMENT_FIELDS.items():
         value = data.get(llm_key)
         if value is not None:
+            value = _normalize_controlled_value(llm_key, value)
+        if value not in (None, "", []):
             fields[airtable_col] = value
 
     # Preserve full raw JSON for future analysis

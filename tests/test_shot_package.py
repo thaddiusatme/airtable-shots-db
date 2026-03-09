@@ -297,7 +297,7 @@ class TestParseLlmResponse:
         assert result["AI Description (Local)"] == (
             "Speaker introduces the topic from a studio desk setup."
         )
-        assert result["Shot Type"] == "Medium Shot"
+        assert result["Shot Type"] == "Medium"
         assert result["AI JSON"] == response
 
     def test_parses_markdown_fenced_json_with_leading_whitespace(self):
@@ -305,15 +305,15 @@ class TestParseLlmResponse:
 
         result = parse_llm_response(response)
 
-        assert result["Camera Angle"] == "Eye Level"
-        assert result["Movement"] == "Static"
+        assert result["Camera Angle"] == "Eye-level"
+        assert result["Movement"] == ["Static"]
 
     def test_parses_markdown_fenced_json_without_language_tag(self):
         response = f"```\n{VALID_LLM_RESPONSE}\n```"
 
         result = parse_llm_response(response)
 
-        assert result["Lighting"] == "Three-point studio lighting with purple accent"
+        assert result["Lighting"] == "Studio-soft"
         assert result["Subject"] == "Male speaker with headphones and microphone"
 
     def test_maps_scene_summary_to_ai_description(self):
@@ -324,19 +324,19 @@ class TestParseLlmResponse:
 
     def test_maps_shot_type(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
-        assert result["Shot Type"] == "Medium Shot"
+        assert result["Shot Type"] == "Medium"
 
     def test_maps_camera_angle(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
-        assert result["Camera Angle"] == "Eye Level"
+        assert result["Camera Angle"] == "Eye-level"
 
     def test_maps_movement(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
-        assert result["Movement"] == "Static"
+        assert result["Movement"] == ["Static"]
 
     def test_maps_lighting(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
-        assert result["Lighting"] == "Three-point studio lighting with purple accent"
+        assert result["Lighting"] == "Studio-soft"
 
     def test_maps_setting(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
@@ -352,13 +352,56 @@ class TestParseLlmResponse:
 
     def test_maps_shot_function(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
-        assert result["Shot Function"] == "Introduction / Hook"
+        assert result["Shot Function"] == "Hook"
+
+    def test_normalizes_still_image_movement_to_static_list(self):
+        response = json.dumps({"movement": "Still image"})
+
+        result = parse_llm_response(response)
+
+        assert result["Movement"] == ["Static"]
+
+    def test_normalizes_multiple_movement_values_to_allowed_list(self):
+        response = json.dumps({"movement": "pan and tilt"})
+
+        result = parse_llm_response(response)
+
+        assert result["Movement"] == ["Pan", "Tilt"]
+
+    def test_normalizes_unknown_controlled_vocab_to_other(self):
+        response = json.dumps(
+            {
+                "shot_type": "Medium Shot",
+                "camera_angle": "Eye Level",
+                "lighting": "Moonbeam haze",
+                "shot_function": "Context setter",
+            }
+        )
+
+        result = parse_llm_response(response)
+
+        assert result["Shot Type"] == "Medium"
+        assert result["Camera Angle"] == "Eye-level"
+        assert result["Lighting"] == "Other"
+        assert result["Shot Function"] == "Other"
+
+    def test_normalizes_recognized_controlled_vocab_synonyms(self):
+        response = json.dumps(
+            {
+                "lighting": "Purple cyberpunk glow",
+                "shot_function": "Cold open",
+            }
+        )
+
+        result = parse_llm_response(response)
+
+        assert result["Lighting"] == "Neon"
+        assert result["Shot Function"] == "Hook"
 
     def test_preserves_raw_json_in_ai_json(self):
         """Full LLM response must be stored in AI JSON for future analysis."""
         result = parse_llm_response(VALID_LLM_RESPONSE)
         assert "AI JSON" in result
-        # Should be valid JSON when parsed back
         parsed = json.loads(result["AI JSON"])
         assert "scene_summary" in parsed
 
@@ -390,14 +433,8 @@ class TestParseLlmResponse:
 
 
 # ---------------------------------------------------------------------------
-# SHOT_ENRICHMENT_FIELDS constant tests
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # build_enrichment_prompt tests
 # ---------------------------------------------------------------------------
-
 
 class TestBuildEnrichmentPrompt:
     """Tests for build_enrichment_prompt() — build multimodal prompt payload."""
@@ -464,6 +501,26 @@ class TestBuildEnrichmentPrompt:
             assert llm_key in result["system_prompt"], (
                 f"Missing LLM key '{llm_key}' in system prompt"
             )
+
+    def test_system_prompt_includes_controlled_vocabulary_guidance(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        assert "shot_type" in result["system_prompt"]
+        assert "Wide, Medium, Close-up" in result["system_prompt"]
+        assert "camera_angle" in result["system_prompt"]
+        assert "Eye-level, High, Low" in result["system_prompt"]
+        assert "movement" in result["system_prompt"]
+        assert "JSON array" in result["system_prompt"]
+        assert "Static, Pan, Tilt" in result["system_prompt"]
+        assert 'use "Other"' in result["system_prompt"]
+
+    def test_system_prompt_includes_narrative_field_guidance(self, shot_pkg):
+        result = build_enrichment_prompt(shot_pkg)
+        prompt = result["system_prompt"]
+        assert "plain strings" in prompt
+        assert "never arrays" in prompt
+        assert "scene_summary" in prompt
+        assert "how_it_is_shot" in prompt
+        assert "frame_progression" in prompt
 
     # -- User prompt tests --
 
@@ -582,3 +639,151 @@ class TestShotEnrichmentFields:
         """Each Airtable column should map from exactly one LLM key."""
         values = list(SHOT_ENRICHMENT_FIELDS.values())
         assert len(values) == len(set(values))
+
+
+# ---------------------------------------------------------------------------
+# Narrative field coercion tests
+# ---------------------------------------------------------------------------
+
+NARRATIVE_FIELDS = (
+    "scene_summary",
+    "how_it_is_shot",
+    "setting",
+    "subject",
+    "on_screen_text",
+    "frame_progression",
+    "production_patterns",
+    "recreation_guidance",
+)
+
+
+class TestNarrativeFieldCoercion:
+    """Tests for coercing non-string LLM narrative values into Airtable-safe strings.
+
+    Live runs showed the LLM sometimes returns lists, dicts, or numbers for
+    narrative/text fields. Airtable rejects these with INVALID_VALUE_FOR_COLUMN.
+    parse_llm_response() must coerce all narrative fields to plain strings.
+    """
+
+    def test_list_how_it_is_shot_coerced_to_string(self):
+        response = json.dumps({
+            "how_it_is_shot": ["Medium shot", "static framing", "shallow depth of field"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["How It Is Shot"], str)
+        assert "Medium shot" in result["How It Is Shot"]
+        assert "static framing" in result["How It Is Shot"]
+        assert "shallow depth of field" in result["How It Is Shot"]
+
+    def test_list_frame_progression_coerced_to_string(self):
+        response = json.dumps({
+            "frame_progression": ["Speaker enters frame", "Gestures at screen", "Returns to center"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Frame Progression"], str)
+        assert "Speaker enters frame" in result["Frame Progression"]
+
+    def test_numeric_frame_progression_coerced_to_string(self):
+        response = json.dumps({
+            "frame_progression": 3,
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Frame Progression"], str)
+        assert "3" in result["Frame Progression"]
+
+    def test_dict_on_screen_text_coerced_to_string(self):
+        response = json.dumps({
+            "on_screen_text": {"title": "Welcome Back", "subtitle": "Episode 5"},
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["On-screen Text"], str)
+        assert "Welcome Back" in result["On-screen Text"]
+        assert "Episode 5" in result["On-screen Text"]
+
+    def test_list_production_patterns_coerced_to_string(self):
+        response = json.dumps({
+            "production_patterns": ["Jump cuts", "B-roll inserts", "Lower thirds"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Production Patterns"], str)
+        assert "Jump cuts" in result["Production Patterns"]
+
+    def test_list_recreation_guidance_coerced_to_string(self):
+        response = json.dumps({
+            "recreation_guidance": ["Use medium shot", "Add three-point lighting", "Place subject center-frame"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Recreation Guidance"], str)
+        assert "Use medium shot" in result["Recreation Guidance"]
+
+    def test_dict_setting_coerced_to_string(self):
+        response = json.dumps({
+            "setting": {"location": "Home office", "details": "desk with monitors"},
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Setting"], str)
+        assert "Home office" in result["Setting"]
+
+    def test_list_subject_coerced_to_string(self):
+        response = json.dumps({
+            "subject": ["Male speaker", "laptop", "whiteboard"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Subject"], str)
+        assert "Male speaker" in result["Subject"]
+
+    def test_list_scene_summary_coerced_to_string(self):
+        response = json.dumps({
+            "scene_summary": ["Intro segment", "Speaker greets audience"],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["AI Description (Local)"], str)
+        assert "Intro segment" in result["AI Description (Local)"]
+
+    def test_nested_list_coerced_to_string(self):
+        response = json.dumps({
+            "how_it_is_shot": [["Medium shot", "static"], ["shallow DoF"]],
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["How It Is Shot"], str)
+        assert "Medium shot" in result["How It Is Shot"]
+
+    def test_mixed_narrative_shapes_all_become_strings(self):
+        response = json.dumps({
+            "how_it_is_shot": ["Medium shot", "static framing"],
+            "frame_progression": 5,
+            "on_screen_text": {"text": "Subscribe"},
+            "production_patterns": "Standard talking head",
+            "recreation_guidance": ["Use wide shot"],
+            "setting": {"type": "studio"},
+            "subject": ["Speaker"],
+            "scene_summary": "Quick intro",
+        })
+        result = parse_llm_response(response)
+        for llm_key in NARRATIVE_FIELDS:
+            airtable_col = SHOT_ENRICHMENT_FIELDS[llm_key]
+            if airtable_col in result:
+                assert isinstance(result[airtable_col], str), (
+                    f"{airtable_col} should be a string, got {type(result[airtable_col])}"
+                )
+
+    def test_plain_string_narrative_unchanged(self):
+        response = json.dumps({
+            "how_it_is_shot": "Medium shot, static framing with shallow depth of field.",
+        })
+        result = parse_llm_response(response)
+        assert result["How It Is Shot"] == "Medium shot, static framing with shallow depth of field."
+
+    def test_boolean_narrative_coerced_to_string(self):
+        response = json.dumps({
+            "on_screen_text": True,
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["On-screen Text"], str)
+
+    def test_float_narrative_coerced_to_string(self):
+        response = json.dumps({
+            "frame_progression": 2.5,
+        })
+        result = parse_llm_response(response)
+        assert isinstance(result["Frame Progression"], str)

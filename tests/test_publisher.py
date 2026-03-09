@@ -1214,7 +1214,7 @@ class TestEnrichmentIntegration:
         record_id, fields = first_update[0]
         assert record_id == "recSHOT1"
         assert fields["AI Description (Local)"] == "Speaker at desk"
-        assert fields["Shot Type"] == "Medium Shot"
+        assert fields["Shot Type"] == "Medium"
 
     @patch("publisher.publish.Api")
     def test_enrichment_includes_ai_metadata(

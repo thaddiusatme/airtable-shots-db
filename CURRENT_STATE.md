@@ -1,19 +1,19 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** March 3, 2026  
-**Branch:** `main`  
-**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | Pipeline Resumption Complete | Chrome Extension Integrated
+**Last Updated:** March 9, 2026  
+**Branch:** `feature/airtable-shot-enrichment-idempotency`  
+**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment Core COMPLETE (GH-23) | Pipeline Resumption Complete | Chrome Extension Integrated
 
 ---
 
 ## Overview
 
-Four-component pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions, frame thumbnails, and per-second frame timeline records.
+Four-component pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions, frame thumbnails, per-second frame timeline records, and optional shot-level LLM enrichment.
 
 **Pipeline Flow:**
 1. **Capture** (TypeScript/Playwright) → Frame PNGs + manifest.json
 2. **Analyze** (Python/OpenCV/Ollama) → Scene boundaries + AI descriptions → analysis.json
-3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images
+3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images + optional shot enrichment
 4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server at :3333)
 
 ---
@@ -64,7 +64,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 ---
 
 ### Phase 3: Airtable Publisher (Python)
-**Status:** Feature-complete with R2 image attachments
+**Status:** Feature-complete with R2 image attachments and shot-enrichment core
 
 **Core Publisher:**
 - Reads `analysis.json` from capture directory
@@ -79,16 +79,25 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 - Attaches Scene Start / Scene End thumbnails to Shot records
 - Optional `--skip-images` flag for metadata-only publish
 
+**Shot-Level LLM Enrichment (GH-23):**
+- `publisher/shot_package.py` assembles full shot packages (all frames + transcript slice)
+- Structured prompt payload builder with `AI_PROMPT_VERSION = "1.0"`
+- Response parser maps 13 LLM keys into Airtable `Shots` fields + `AI JSON`
+- `publish_to_airtable()` supports `enrich_shots`, `enrich_fn`, and `enrich_model`
+- Idempotent re-runs preserve old enrichment and skip already-enriched shots
+- Schema helper adds missing enrichment fields to existing bases
+
 **Module Structure:**
-- `publisher/publish.py` — Core publisher (Videos, Shots, Frames + idempotency for all)
+- `publisher/publish.py` — Core publisher (Videos, Shots, Frames + enrichment + idempotency)
+- `publisher/shot_package.py` — Shot package assembly, prompt builder, response parser
 - `publisher/r2_uploader.py` — R2 uploads for scene boundaries + all frames (parallel support)
 - `publisher/frame_helpers.py` — `parse_timestamp_from_filename()` regex parser
-- `publisher/cli.py` — CLI with `--capture-dir`, `--api-key`, `--base-id`, `--dry-run`, `--skip-images`, `--skip-frames`, `--segment-transcripts`, `--merge-scenes`, `--min-scene-duration`, `--max-concurrent-uploads`, `--frame-sampling`, `--verbose`
+- `publisher/cli.py` — CLI with publish/frames/transcript flags; enrichment params are supported in `publish_to_airtable()` but a production-ready CLI LLM adapter is still pending
 - `publisher/__main__.py` — `python -m publisher` support
 
-**Tests:** 190 Python passing (see test coverage table)
+**Tests:** 297 total passing on the enrichment branches, including 97 enrichment-related tests
 
-**Real-data validation:** `bjdBVZa66oU`, 34 shots → 34 frames uploaded to R2 with 4 concurrent workers → Frames table blocked on GH #18
+**Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered, but a production LLM client adapter / end-to-end enrichment run remains open follow-up work
 
 ---
 
@@ -114,17 +123,34 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 | Video | Linked record → Videos | Publisher |
 | Timestamp (sec) | Number | Publisher (scene start) |
 | Timestamp (hh:mm:ss) | Single line text | Publisher |
+| Transcript Line | Long text | Publisher (when transcript segmentation enabled) |
 | Transcript Start (sec) | Number | Publisher |
 | Transcript End (sec) | Number | Publisher |
 | AI Description (Local) | Long text | Publisher (from Ollama) |
+| How It Is Shot | Long text | Publisher enrichment |
+| Frame Progression | Long text | Publisher enrichment |
+| Production Patterns | Long text | Publisher enrichment |
+| Recreation Guidance | Long text | Publisher enrichment |
+| Shot Function | Single/multi select or text | Publisher enrichment / Airtable schema |
+| Shot Type | Single/multi select or text | Publisher enrichment / Airtable schema |
+| Camera Angle | Single/multi select or text | Publisher enrichment / Airtable schema |
+| Movement | Single/multi select or text | Publisher enrichment / Airtable schema |
+| Lighting | Single/multi select or text | Publisher enrichment / Airtable schema |
+| Setting | Single line text | Publisher enrichment |
+| Subject | Single line text | Publisher enrichment |
+| On-screen Text | Text | Publisher enrichment |
+| AI JSON | Long text | Publisher enrichment |
+| AI Prompt Version | Single line text | Publisher enrichment |
+| AI Updated At | Date/time | Publisher enrichment |
 | AI Model | Single line text | Publisher |
+| AI Error | Long text | Publisher enrichment |
 | AI Status | Single select (Done/Queued) | Publisher |
 | Capture Method | Single select (Auto Import) | Publisher |
 | Source Device | Single select (Desktop) | Publisher |
 | **Scene Start** | **Attachment** | **Publisher (R2 URL)** |
 | **Scene End** | **Attachment** | **Publisher (R2 URL)** |
 
-**Not yet populated:** Shot Function, Shot Type, Camera Angle, Movement, Lighting, Setting, Subject, On-screen Text, Description (Manual), Tags, AI JSON, Needs Review, Captured At, Rights Note
+**Notes:** Enrichment fields are populated when `publish_to_airtable()` is called with enrichment enabled and an injected LLM function. Existing bases may need `setup_airtable.py --add-enrichment-fields` to provision the 4 new multiline fields added in GH-23.
 
 ### Frames Table ✅ CREATED — [GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18) RESOLVED
 | Field | Type | Populated By |
@@ -170,20 +196,11 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 
 ## 🧪 Test Coverage
 
-| Module | Tests | Status |
-|---|---|---|
-| Analyzer (scene_detector) | 29 | ✅ Passing |
-| Analyzer (CLI) | 8 | ✅ Passing |
-| Analyzer (VLM) | 20 | ✅ Passing |
-| Segmenter (transcript) | 13 | ✅ Passing |
-| Segmenter (scene merger) | 8 | ✅ Passing |
-| Publisher (core + frames) | 54 | ✅ Passing |
-| Publisher (CLI) | 11 | ✅ Passing |
-| Publisher (R2 uploader) | 23 | ✅ Passing |
-| Publisher (frame helpers) | 12 | ✅ Passing |
-| Pipeline State (Node) | 15 | ✅ Passing |
-| Resume API (Node) | 9 | ✅ Passing |
-| **Total** | **202** | **✅ All Passing** |
+- **Enrichment-related coverage:** 97 tests
+  - `tests/test_shot_package.py` — 62
+  - `tests/test_publisher.py` — 24 enrichment/idempotency tests
+  - `tests/test_setup_airtable.py` — 11 schema/contract tests
+- **Total project coverage on current enrichment branches:** 297 tests passing
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
 Pipeline state tests use `node:test` with temp directories (no external deps).  
@@ -205,7 +222,8 @@ airtable-shots-db/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── cli.py              # CLI entry point (all flags)
-│   ├── publish.py          # Core publisher: Videos, Shots, Frames
+│   ├── publish.py          # Core publisher: Videos, Shots, Frames, enrichment
+│   ├── shot_package.py     # Shot package assembly + prompt + parser
 │   ├── r2_uploader.py      # R2 uploads: scene boundaries + all frames (parallel)
 │   └── frame_helpers.py    # parse_timestamp_from_filename() regex
 ├── tests/
@@ -216,6 +234,8 @@ airtable-shots-db/
 │   ├── test_r2_uploader.py
 │   ├── test_scene_detector.py
 │   ├── test_scene_merger.py
+│   ├── test_setup_airtable.py
+│   ├── test_shot_package.py
 │   ├── test_transcript_segmenter.py
 │   └── test_vlm_describer.py
 ├── captures/               # Capture directories with frames + analysis.json (gitignored)
@@ -230,6 +250,7 @@ airtable-shots-db/
 ├── chrome-extension/       # Pipeline trigger + transcript capture
 ├── .env                    # Credentials (gitignored)
 ├── requirements.txt        # Python dependencies
+├── setup_airtable.py       # Airtable schema helpers (Frames + enrichment fields)
 ├── jest.config.js
 ├── pytest.ini
 ├── ISSUE_SHOT_LIST_PIPELINE.md
@@ -265,13 +286,15 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
-| `TBD` | feat(GH-19): integrate frames into chrome extension pipeline (orchestrator.js) |
+| `d89c759` | feat(GH-23): preserve shot enrichment across idempotent re-runs |
+| `45bc4f2` | feat(GH-23): add enrichment fields helper to `setup_airtable.py` |
+| `9c31802` | feat(GH-23): integrate shot enrichment into publisher |
+| `bb1aaf9` | feat(GH-23): add shot enrichment prompt payload builder |
+| `0719744` | feat(GH-23): add shot package assembly + LLM response parser |
 | `564fe7d` | fix(GH-18): correct attachment field type multipleAttachments (plural) |
 | `c359f18` | feat(GH-18): add_frames_table() — additive Frames table creation (TDD iteration 1) |
 | `7b6343d` | feat(GH-17): add parallel uploads and frame sampling (TDD iteration 4) |
-| `4504887` | feat(GH-17): integrate Frame records into publisher with idempotency + --skip-frames (TDD iteration 3) |
-| `582db8e` | feat(GH-17): add frame record builder and R2 all-frames uploader (TDD iteration 2) |
-| `6539a04` | feat(GH-17): add timestamp parsing from frame filenames (TDD iteration 1) |
+| `4504887` | feat(GH-17): integrate Frame records into publisher with idempotency + --skip-frames |
 | `238694a` | feat: add resume API endpoints and extension resume button |
 
 ---
@@ -294,6 +317,13 @@ airtable-shots-db/
 - **Linked record formulas don't work with record IDs:** `{Video}='recXXX'` returns empty. Use reverse-link field instead.
 - **singleSelect fields reject unknown values:** Must use exact choices (e.g., "Done" not "done").
 - **batch_create/batch_delete auto-chunk:** Max 10 records per request.
+
+### Shot Enrichment (GH-23)
+- **Manifest remains source of truth:** Shot frame collection should use manifest-driven filename resolution when available, especially for sampled captures.
+- **`AI Prompt Version` is the enrichment signal:** Shots with this field set are considered enriched and are skipped on re-run unless explicit re-enrichment logic is added.
+- **Error-only shots retry automatically:** If an old shot has `AI Error` but no `AI Prompt Version`, it is eligible for re-enrichment on the next run.
+- **`Shot Label` matching assumes stable scene ordering:** If scene boundaries change between runs, preserved enrichment could attach to the wrong recreated shot.
+- **CLI gap still exists:** `publish_to_airtable()` supports enrichment parameters, but `publisher/cli.py` does not yet expose a production-ready LLM adapter path.
 
 ### R2 Upload
 - **`source .env` doesn't export vars:** Use `set -a && source .env && set +a` for subprocess.
@@ -321,6 +351,7 @@ airtable-shots-db/
 - [x] **Frame sampling** (`--frame-sampling N`, deduplication by Frame Key)
 - [x] **Create Frames table in Airtable** ([GH #18](https://github.com/thaddiusatme/airtable-shots-db/issues/18)) — Commits `c359f18`, `564fe7d`
 - [x] **Integrate Frames into Chrome Extension** ([GH #19](https://github.com/thaddiusatme/airtable-shots-db/issues/19)) — March 3, 2026
+- [x] **Shot-level LLM enrichment core** ([GH #23](https://github.com/thaddiusatme/airtable-shots-db/issues/23)) — shot package assembly, prompt payloads, schema alignment, idempotent re-run
 
 ### P1 — Polish & Optimization
 - [ ] **Step output validation** (check `analysis.json` exists before skipping analyze)
@@ -329,13 +360,16 @@ airtable-shots-db/
 - [ ] **Thumbnail generation** (resize frames to 640px before upload, save bandwidth)
 - [ ] **Logging improvements** (structured JSON logs, log levels)
 - [ ] **End-to-end integration test** (Capture → Analyze → Publish → Frames on fresh video)
-- [ ] **`setup_airtable.py` update** (add Frames table creation to schema script)
+- [ ] **Real LLM adapter + CLI wiring for enrichment** (expose a production-ready `--enrich-shots` path in `publisher/cli.py`)
+- [ ] **`--force-reenrich` flag** (manual override for already-enriched shots)
+- [ ] **Prompt version-aware re-enrichment** (selective re-run when `AI_PROMPT_VERSION` changes)
 
 ### P2 — Advanced Features
 - [ ] **Batch processing** (publish multiple videos in one run)
 - [ ] **Incremental updates** (only re-analyze changed scenes)
-- [ ] **Shot metadata enrichment** (Shot Function, Camera Angle, etc. via VLM)
-- [ ] **Transcript integration** (Chrome extension → Airtable → link to Shots)
+- [ ] **Chrome extension enrichment integration** (trigger GH-23 enrichment from the extension pipeline)
+- [ ] **Cost/rate limiting for enrichment** (token tracking + configurable rate limits)
+- [ ] **Prompt-size optimization / batching** (large shot packages with many frames)
 - [ ] **Web UI** for shot list review/editing
 
 ### P3 — Production Readiness
@@ -418,6 +452,7 @@ set -a && source .env && set +a
 **Documentation:**
 - [ISSUE_SHOT_LIST_PIPELINE.md](./ISSUE_SHOT_LIST_PIPELINE.md) — Original spec + Phase 1-3 details
 - [ISSUE_SHOT_IMAGE_ATTACHMENTS.md](./ISSUE_SHOT_IMAGE_ATTACHMENTS.md) — R2 upload spec
+- [docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md](./docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md) — GH-23 implementation summary and remaining work
 
 **External APIs:**
 - [Airtable API Docs](https://airtable.com/developers/web/api/introduction)

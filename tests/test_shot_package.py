@@ -289,6 +289,33 @@ class TestParseLlmResponse:
         result = parse_llm_response(VALID_LLM_RESPONSE)
         assert isinstance(result, dict)
 
+    def test_parses_markdown_fenced_json_with_language_tag(self):
+        response = f"```json\n{VALID_LLM_RESPONSE}\n```"
+
+        result = parse_llm_response(response)
+
+        assert result["AI Description (Local)"] == (
+            "Speaker introduces the topic from a studio desk setup."
+        )
+        assert result["Shot Type"] == "Medium Shot"
+        assert result["AI JSON"] == response
+
+    def test_parses_markdown_fenced_json_with_leading_whitespace(self):
+        response = f"\n\n  ```json\n{VALID_LLM_RESPONSE}\n```\n"
+
+        result = parse_llm_response(response)
+
+        assert result["Camera Angle"] == "Eye Level"
+        assert result["Movement"] == "Static"
+
+    def test_parses_markdown_fenced_json_without_language_tag(self):
+        response = f"```\n{VALID_LLM_RESPONSE}\n```"
+
+        result = parse_llm_response(response)
+
+        assert result["Lighting"] == "Three-point studio lighting with purple accent"
+        assert result["Subject"] == "Male speaker with headphones and microphone"
+
     def test_maps_scene_summary_to_ai_description(self):
         result = parse_llm_response(VALID_LLM_RESPONSE)
         assert result["AI Description (Local)"] == (

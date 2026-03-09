@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from publisher.publish import resolve_frame_filename
@@ -196,6 +197,15 @@ def build_shot_package(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_llm_json_response(raw_response: str) -> str:
+    """Normalize LLM JSON responses before parsing."""
+    normalized = raw_response.strip()
+    fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", normalized, flags=re.DOTALL)
+    if fence_match:
+        return fence_match.group(1).strip()
+    return normalized
+
+
 def parse_llm_response(raw_response: str) -> dict[str, Any]:
     """Parse structured LLM output into an Airtable field dict.
 
@@ -214,7 +224,7 @@ def parse_llm_response(raw_response: str) -> dict[str, Any]:
         return {"AI Error": "Empty LLM response"}
 
     try:
-        data = json.loads(raw_response)
+        data = json.loads(_normalize_llm_json_response(raw_response))
     except json.JSONDecodeError as e:
         return {"AI Error": f"Invalid JSON from LLM: {e}"}
 

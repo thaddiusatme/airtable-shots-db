@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from publisher.llm_enricher import make_ollama_enrich_fn
+from publisher.llm_enricher import make_ollama_enrich_fn, verify_ollama_model
 
 
 SAMPLE_PROMPT = {
@@ -295,3 +295,121 @@ class TestOllamaErrorHandling:
         assert result == '{"scene_summary": "test"}'
         payload = mock_post.call_args[1]["json"]
         assert payload["images"] == []
+
+
+# ---------------------------------------------------------------------------
+# TestPreflightModelCheck — verify_ollama_model + factory integration
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightModelCheck:
+    """Tests for pre-flight model availability verification."""
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_verify_succeeds_when_model_exists(self, mock_get):
+        """verify_ollama_model should not raise when model is in /api/tags."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [
+                    {"name": "llava:latest"},
+                    {"name": "llama3.2-vision:latest"},
+                ]
+            }),
+        )
+        # Should not raise
+        verify_ollama_model(
+            model="llava:latest",
+            ollama_url="http://localhost:11434/api/generate",
+        )
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_verify_fails_when_model_missing(self, mock_get):
+        """verify_ollama_model should raise RuntimeError for missing model."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [
+                    {"name": "llava:latest"},
+                    {"name": "llama3.2-vision:latest"},
+                ]
+            }),
+        )
+        with pytest.raises(RuntimeError, match="llava:7b"):
+            verify_ollama_model(
+                model="llava:7b",
+                ollama_url="http://localhost:11434/api/generate",
+            )
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_verify_error_lists_available_models(self, mock_get):
+        """Error message should list available models for diagnosis."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [
+                    {"name": "llava:latest"},
+                    {"name": "llama3.2-vision:latest"},
+                ]
+            }),
+        )
+        with pytest.raises(RuntimeError, match="llava:latest") as exc_info:
+            verify_ollama_model(
+                model="llava:7b",
+                ollama_url="http://localhost:11434/api/generate",
+            )
+        assert "llama3.2-vision:latest" in str(exc_info.value)
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_verify_connection_error_raises(self, mock_get):
+        """Connection failure during pre-flight should raise RuntimeError."""
+        import requests
+        mock_get.side_effect = requests.ConnectionError("Connection refused")
+        with pytest.raises(RuntimeError, match="[Cc]onnect"):
+            verify_ollama_model(
+                model="llava:latest",
+                ollama_url="http://localhost:11434/api/generate",
+            )
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_factory_with_verify_model_calls_check(self, mock_get, tmp_path):
+        """make_ollama_enrich_fn(verify_model=True) should call verify_ollama_model."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        fn = make_ollama_enrich_fn(
+            capture_dir=str(tmp_path),
+            model="llava:latest",
+            verify_model=True,
+        )
+        assert callable(fn)
+        mock_get.assert_called_once()
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_factory_with_verify_model_fails_fast(self, mock_get, tmp_path):
+        """make_ollama_enrich_fn(verify_model=True) should fail fast if model missing."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        with pytest.raises(RuntimeError, match="nonexistent-model"):
+            make_ollama_enrich_fn(
+                capture_dir=str(tmp_path),
+                model="nonexistent-model",
+                verify_model=True,
+            )
+
+    def test_factory_without_verify_model_skips_check(self, tmp_path):
+        """make_ollama_enrich_fn without verify_model should not call /api/tags."""
+        # No mock on requests.get — if it were called, it would hit real network
+        # and likely fail. The fact this doesn't raise proves no GET was made.
+        fn = make_ollama_enrich_fn(
+            capture_dir=str(tmp_path),
+            model="nonexistent-model",
+        )
+        assert callable(fn)

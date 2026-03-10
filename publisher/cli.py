@@ -126,8 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--enrich-model",
-        default="llava:7b",
-        help="Model name for enrichment (stored in AI Model field, default: llava:7b).",
+        default="llava:latest",
+        help="Model name for enrichment (stored in AI Model field, default: llava:latest).",
     )
     parser.add_argument(
         "--ollama-url",

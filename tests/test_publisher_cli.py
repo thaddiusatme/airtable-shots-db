@@ -375,6 +375,28 @@ class TestCLIEnrichmentFlags:
         assert rc == 0
 
     @patch("publisher.cli.publish_to_airtable")
+    def test_default_enrich_model_is_llava_latest(self, mock_publish, analysis_dir: Path):
+        """CLI default --enrich-model should be llava:latest (matches common local install)."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_model"] == "llava:latest"
+
+    @patch("publisher.cli.publish_to_airtable")
     def test_max_enrich_frames_flag(self, mock_publish, analysis_dir: Path):
         """--max-enrich-frames should be accepted as a CLI flag."""
         mock_publish.return_value = {

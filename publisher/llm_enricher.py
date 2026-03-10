@@ -11,7 +11,7 @@ Usage:
 
     enrich = make_ollama_enrich_fn(
         capture_dir="/path/to/captures/abc123",
-        model="llava:7b",
+        model="llava:latest",
     )
     raw_json = enrich(prompt_dict)
 """
@@ -28,13 +28,55 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+def verify_ollama_model(
+    model: str,
+    *,
+    ollama_url: str = "http://localhost:11434/api/generate",
+) -> None:
+    """Verify that the requested model is available in Ollama.
+
+    Calls ``GET /api/tags`` to list installed models and raises
+    ``RuntimeError`` if the requested model is not found.
+
+    Args:
+        model: Ollama model name to verify (e.g. ``llava:latest``).
+        ollama_url: Ollama API generate endpoint URL. The base URL is
+            derived by stripping the path and appending ``/api/tags``.
+    """
+    # Derive base URL from the generate endpoint
+    base_url = ollama_url.rsplit("/api/", 1)[0]
+    tags_url = base_url + "/api/tags"
+
+    try:
+        resp = requests.get(tags_url, timeout=10)
+        resp.raise_for_status()
+    except requests.ConnectionError as e:
+        raise RuntimeError(
+            f"Ollama connection failed at {tags_url} — is Ollama running? {e}"
+        ) from e
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to query Ollama models at {tags_url}: {e}"
+        ) from e
+
+    data = resp.json()
+    available = [m["name"] for m in data.get("models", [])]
+
+    if model not in available:
+        raise RuntimeError(
+            f"Model '{model}' not found in Ollama. "
+            f"Available models: {', '.join(available)}"
+        )
+
+
 def make_ollama_enrich_fn(
     capture_dir: str,
     *,
     ollama_url: str = "http://localhost:11434/api/generate",
-    model: str = "llava:7b",
+    model: str = "llava:latest",
     timeout: int = 600,
     max_frames: int | None = None,
+    verify_model: bool = False,
 ) -> callable:
     """Create an Ollama-backed enrich_fn callable.
 
@@ -48,10 +90,15 @@ def make_ollama_enrich_fn(
         timeout: HTTP request timeout in seconds.
         max_frames: Maximum number of frame images to send. ``None`` means
             send all referenced frames. When set, frames are evenly sampled.
+        verify_model: If True, call ``verify_ollama_model()`` before
+            returning the enrich_fn. Fails fast if model is not installed.
 
     Returns:
         Callable that takes a prompt dict and returns a raw JSON string.
     """
+    if verify_model:
+        verify_ollama_model(model=model, ollama_url=ollama_url)
+
     capture_path = Path(capture_dir)
 
     def _enrich(prompt_dict: dict[str, Any]) -> str:

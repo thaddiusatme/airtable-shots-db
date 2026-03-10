@@ -114,4 +114,4 @@ Added "Capture Shots" feature to the Chrome extension — captures timestamped P
 - [ ] **Phase 4**: yt-frame-poc CLI alignment
 - [ ] **Phase 5**: Production readiness (end-to-end test, error handling)
 
-See `ISSUE_SHOT_LIST_PIPELINE.md` for full pipeline spec.
+See `docs/ISSUE_SHOT_LIST_PIPELINE.md` for full pipeline spec.

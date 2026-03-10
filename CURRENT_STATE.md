@@ -253,10 +253,11 @@ airtable-shots-db/
 ├── setup_airtable.py       # Airtable schema helpers (Frames + enrichment fields)
 ├── jest.config.js
 ├── pytest.ini
-├── ISSUE_SHOT_LIST_PIPELINE.md
-├── ISSUE_SHOT_IMAGE_ATTACHMENTS.md
-└── CURRENT_STATE.md        # This file
-```
+├── CURRENT_STATE.md        # This file
+└── docs/
+    ├── ISSUE_SHOT_LIST_PIPELINE.md
+    ├── ISSUE_SHOT_IMAGE_ATTACHMENTS.md
+    └── archive/            # Historical session prompts / phase handoff docs
 
 ---
 
@@ -450,8 +451,8 @@ set -a && source .env && set +a
 ## 📞 Support & References
 
 **Documentation:**
-- [ISSUE_SHOT_LIST_PIPELINE.md](./ISSUE_SHOT_LIST_PIPELINE.md) — Original spec + Phase 1-3 details
-- [ISSUE_SHOT_IMAGE_ATTACHMENTS.md](./ISSUE_SHOT_IMAGE_ATTACHMENTS.md) — R2 upload spec
+- [docs/ISSUE_SHOT_LIST_PIPELINE.md](./docs/ISSUE_SHOT_LIST_PIPELINE.md) — Original spec + Phase 1-3 details
+- [docs/ISSUE_SHOT_IMAGE_ATTACHMENTS.md](./docs/ISSUE_SHOT_IMAGE_ATTACHMENTS.md) — R2 upload spec
 - [docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md](./docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md) — GH-23 implementation summary and remaining work
 
 **External APIs:**

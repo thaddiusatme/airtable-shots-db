@@ -259,7 +259,7 @@ app.post('/pipeline/resume/:runId', (req, res) => {
 
 ## Related Issues & Docs
 
-- `ISSUE_SHOT_LIST_PIPELINE.md` — Overall pipeline architecture
+- `docs/ISSUE_SHOT_LIST_PIPELINE.md` — Overall pipeline architecture
 - Chrome Extension: `chrome-extension/popup.js` — Current pipeline UI
 - Pipeline Server: `pipeline-server/orchestrator.js` — Step orchestration
 - yt-frame-poc: External dependency (may need --start-frame PR)

@@ -248,5 +248,5 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 ## Related
 
 - `CURRENT_STATE.md` — Current project state (updated to reflect GH-23 core completion and remaining follow-up work)
-- `ISSUE_SHOT_LIST_PIPELINE.md` — Original shot list pipeline spec
+- `docs/ISSUE_SHOT_LIST_PIPELINE.md` — Original shot list pipeline spec
 - `docs/GITHUB_ISSUE_CI_DEVELOPER_EXPERIENCE.md` — CI/DX framework (separate track)

@@ -314,6 +314,7 @@ def publish_to_airtable(
     enrich_shots: bool = False,
     enrich_fn: Callable[[dict[str, Any]], str] | None = None,
     enrich_model: str = "",
+    force_reenrich: bool = False,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
@@ -338,6 +339,8 @@ def publish_to_airtable(
         enrich_fn: Callable that takes a prompt payload dict and returns a
             raw LLM response string. Required when enrich_shots is True.
         enrich_model: Model name for AI Model field tracking.
+        force_reenrich: If True, re-enrich all shots regardless of existing
+            enrichment state. Overrides prompt-version-aware skip logic.
 
     Returns:
         Summary dict with video_record_id, shots_created, video_id,
@@ -544,21 +547,31 @@ def publish_to_airtable(
                 # Check if old shot was already enriched
                 old_fields = old_enrichment_by_label.get(shot_label, {})
 
-                if is_shot_enriched(old_fields):
-                    # Copy old enrichment fields to new shot record
-                    preserved = {
-                        k: v for k, v in old_fields.items()
-                        if k in enrichment_preserve_fields and v is not None
-                    }
-                    if preserved:
-                        shots_table.update(shot_record["id"], preserved)
-                    shots_skipped_count += 1
+                if not force_reenrich and is_shot_enriched(old_fields):
+                    # Check prompt version — re-enrich if stale
+                    old_version = old_fields.get("AI Prompt Version", "")
+                    if old_version == AI_PROMPT_VERSION:
+                        # Copy old enrichment fields to new shot record
+                        preserved = {
+                            k: v for k, v in old_fields.items()
+                            if k in enrichment_preserve_fields and v is not None
+                        }
+                        if preserved:
+                            shots_table.update(shot_record["id"], preserved)
+                        shots_skipped_count += 1
+                        logger.info(
+                            "Skipped enrichment for shot %s (%s) — already enriched (v%s)",
+                            shot_record["id"],
+                            shot_label,
+                            old_version,
+                        )
+                        continue
                     logger.info(
-                        "Skipped enrichment for shot %s (%s) — already enriched",
-                        shot_record["id"],
+                        "Re-enriching %s — prompt version changed (%s → %s)",
                         shot_label,
+                        old_version,
+                        AI_PROMPT_VERSION,
                     )
-                    continue
 
                 logger.info(
                     "Enriching %s (%d/%d) — requesting LLM analysis",

@@ -146,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Max frames to send per shot for enrichment (default: all). Caps image payload size.",
     )
+    parser.add_argument(
+        "--force-reenrich",
+        action="store_true",
+        default=False,
+        help="Re-enrich all shots regardless of existing enrichment state.",
+    )
     args = parser.parse_args(argv)
 
     configure_logging(verbose=args.verbose)
@@ -214,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             enrich_shots=args.enrich_shots,
             enrich_fn=enrich_fn,
             enrich_model=args.enrich_model,
+            force_reenrich=args.force_reenrich,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

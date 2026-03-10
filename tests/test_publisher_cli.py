@@ -458,6 +458,36 @@ class TestCLIEnrichmentFlags:
         ])
         assert rc == 1
 
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_force_reenrich_flag_propagates(self, mock_publish, mock_get, analysis_dir: Path):
+        """--force-reenrich should pass force_reenrich=True to publish_to_airtable."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 1,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--force-reenrich",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["force_reenrich"] is True
+
     @patch("publisher.cli.publish_to_airtable")
     def test_max_enrich_frames_flag(self, mock_publish, analysis_dir: Path):
         """--max-enrich-frames should be accepted as a CLI flag."""

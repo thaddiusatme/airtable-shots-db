@@ -1,8 +1,8 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** March 9, 2026  
-**Branch:** `feature/airtable-shot-enrichment-idempotency`  
-**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment Core COMPLETE (GH-23) | Pipeline Resumption Complete | Chrome Extension Integrated
+**Last Updated:** March 10, 2026  
+**Branch:** `fix/gh-28-ollama-model-tag-mismatch`  
+**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment Core COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | Pipeline Resumption Complete | Chrome Extension Integrated
 
 ---
 
@@ -92,12 +92,13 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 - `publisher/shot_package.py` — Shot package assembly, prompt builder, response parser
 - `publisher/r2_uploader.py` — R2 uploads for scene boundaries + all frames (parallel support)
 - `publisher/frame_helpers.py` — `parse_timestamp_from_filename()` regex parser
-- `publisher/cli.py` — CLI with publish/frames/transcript flags; enrichment params are supported in `publish_to_airtable()` but a production-ready CLI LLM adapter is still pending
+- `publisher/llm_enricher.py` — Ollama LLM adapter + pre-flight model verification
+- `publisher/cli.py` — CLI with publish/frames/transcript/enrichment flags; pre-flight model check enabled when `--enrich-shots` is set
 - `publisher/__main__.py` — `python -m publisher` support
 
-**Tests:** 297 total passing on the enrichment branches, including 97 enrichment-related tests
+**Tests:** 235 validated in-scope passing (140 enrichment-related)
 
-**Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered, but a production LLM client adapter / end-to-end enrichment run remains open follow-up work
+**Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered with live Ollama adapter and pre-flight model check. Live re-validation with corrected `llava:latest` default pending.
 
 ---
 
@@ -196,11 +197,13 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 
 ## 🧪 Test Coverage
 
-- **Enrichment-related coverage:** 97 tests
+- **Enrichment-related coverage:** 140 tests
   - `tests/test_shot_package.py` — 62
-  - `tests/test_publisher.py` — 24 enrichment/idempotency tests
+  - `tests/test_publisher.py` — 30 enrichment/idempotency/observability tests
+  - `tests/test_llm_enricher.py` — 27 adapter/pre-flight tests
+  - `tests/test_publisher_cli.py` — 10 CLI enrichment flag tests
   - `tests/test_setup_airtable.py` — 11 schema/contract tests
-- **Total project coverage on current enrichment branches:** 297 tests passing
+- **Total validated in-scope suite:** 235 tests passing
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
 Pipeline state tests use `node:test` with temp directories (no external deps).  
@@ -287,6 +290,8 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
+| `0f6045b` | feat(GH-28): wire verify_model=True into CLI for fail-fast model check |
+| `aae72af` | fix(GH-28): change default model tag to llava:latest + pre-flight check |
 | `d89c759` | feat(GH-23): preserve shot enrichment across idempotent re-runs |
 | `45bc4f2` | feat(GH-23): add enrichment fields helper to `setup_airtable.py` |
 | `9c31802` | feat(GH-23): integrate shot enrichment into publisher |
@@ -325,8 +330,9 @@ airtable-shots-db/
 - **Error-only shots retry automatically:** If an old shot has `AI Error` but no `AI Prompt Version`, it is eligible for re-enrichment on the next run.
 - **`Shot Label` matching assumes stable scene ordering:** If scene boundaries change between runs, preserved enrichment could attach to the wrong recreated shot.
 - **CLI wiring exists for Ollama:** `publisher/cli.py` now exposes `--enrich-shots`, provider/model/timeout flags, and wires through `make_ollama_enrich_fn()`.
+- **GH-28 model tag fix:** Default model changed from `llava:7b` to `llava:latest`. Pre-flight model availability check via `GET /api/tags` runs before the publish loop when `--enrich-shots` is set. Fails fast with `rc=1` if model not found.
 - **GH-27 observability landed:** The publisher logs shot label + progress before each request, records per-shot elapsed time, and writes shot-labeled `AI Error` values for failed enrichments.
-- **Late-shot root cause is still open:** The fresh 16-shot live run still needs to be re-run with the new observability in place to determine whether the post-`S10` stall is a timeout, provider stall, or payload-size issue.
+- **Late-shot root cause may be resolved:** The post-`S10` stall may have been caused by the `llava:7b` 404 retry loop. Needs live re-validation with the corrected default.
 
 ### R2 Upload
 - **`source .env` doesn't export vars:** Use `set -a && source .env && set +a` for subprocess.

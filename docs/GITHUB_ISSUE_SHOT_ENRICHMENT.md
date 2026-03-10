@@ -159,6 +159,15 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - Ollama adapter error messages now include the active model name
 - 8 new tests (6 observability + 2 adapter error-context tests)
 
+### Slice 8: Model Tag Fix + Pre-flight Check (GH-28) 
+**Commits:** `aae72af`, `0f6045b` | **Branch:** `fix/gh-28-ollama-model-tag-mismatch`
+
+- CLI default `--enrich-model` changed from `llava:7b` to `llava:latest`
+- `verify_ollama_model(model, ollama_url)` — pre-flight `GET /api/tags` check
+- `verify_model=True` wired into CLI when `--enrich-shots` is set — fails fast with `rc=1` before publish loop
+- Clear error message: lists the bad model name + all available models
+- 10 new tests (7 pre-flight, 1 default model, 2 CLI verify wiring)
+
 ---
 
 ## Test Coverage
@@ -167,11 +176,11 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 |---|---|---|
 | `tests/test_shot_package.py` | 62 | 62 |
 | `tests/test_publisher.py` | 30 (10 integration + 8 idempotency + 6 observability + 6 unit) | 102 |
-| `tests/test_llm_enricher.py` | 20 | 20 |
-| `tests/test_publisher_cli.py` | 7 | 18 |
+| `tests/test_llm_enricher.py` | 27 (+7 pre-flight) | 27 |
+| `tests/test_publisher_cli.py` | 10 (+3 model verify/default) | 13 |
 | `tests/test_setup_airtable.py` | 11 (schema + contract) | 19 |
-| **Total enrichment-related** | **130** | |
-| **Current validated in-scope suite** | | **225** |
+| **Total enrichment-related** | **140** | |
+| **Current validated in-scope suite** | | **235** |
 
 ---
 
@@ -271,7 +280,9 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 | `d89c759` | Mar 8, 2026 | Idempotent re-run (skip enriched shots) | 14 |
 | `78d07a2` | Mar 9, 2026 | Live Ollama adapter + CLI wiring | 25 |
 | `d719522` | Mar 10, 2026 | Per-shot observability + timeout/failure surfacing | 8 |
-| **Total** | | | **130** |
+| `aae72af` | Mar 10, 2026 | Default model tag fix + pre-flight model check (GH-28) | 8 |
+| `0f6045b` | Mar 10, 2026 | Wire verify_model=True into CLI for fail-fast (GH-28) | 2 |
+| **Total** | | | **140** |
 
 ---
 

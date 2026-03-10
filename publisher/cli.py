@@ -176,13 +176,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.enrich_provider == "ollama":
             from publisher.llm_enricher import make_ollama_enrich_fn
 
-            enrich_fn = make_ollama_enrich_fn(
-                capture_dir=args.capture_dir,
-                ollama_url=args.ollama_url,
-                model=args.enrich_model,
-                timeout=args.ollama_timeout,
-                max_frames=args.max_enrich_frames,
-            )
+            try:
+                enrich_fn = make_ollama_enrich_fn(
+                    capture_dir=args.capture_dir,
+                    ollama_url=args.ollama_url,
+                    model=args.enrich_model,
+                    timeout=args.ollama_timeout,
+                    max_frames=args.max_enrich_frames,
+                    verify_model=True,
+                )
+            except RuntimeError as e:
+                logger.error("Model verification failed: %s", e)
+                return 1
             logger.info(
                 "Enrichment enabled (provider=%s, model=%s, url=%s)",
                 args.enrich_provider,

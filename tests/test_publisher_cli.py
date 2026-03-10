@@ -262,9 +262,16 @@ class TestCLIEnrichmentFlags:
             call_kwargs = mock_publish.call_args[1]
             assert call_kwargs["enrich_shots"] is True
 
+    @patch("publisher.llm_enricher.requests.get")
     @patch("publisher.cli.publish_to_airtable")
-    def test_enrich_model_propagates(self, mock_publish, analysis_dir: Path):
+    def test_enrich_model_propagates(self, mock_publish, mock_get, analysis_dir: Path):
         """--enrich-model value is passed through to publish_to_airtable."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:7b"}]
+            }),
+        )
         mock_publish.return_value = {
             "video_record_id": "recNEW",
             "video_id": "KGHoVptow30",
@@ -353,9 +360,16 @@ class TestCLIEnrichmentFlags:
         call_kwargs = mock_publish.call_args[1]
         assert call_kwargs.get("enrich_shots") is not True or call_kwargs.get("enrich_fn") is None
 
+    @patch("publisher.llm_enricher.requests.get")
     @patch("publisher.cli.publish_to_airtable")
-    def test_ollama_url_propagates(self, mock_publish, analysis_dir: Path):
+    def test_ollama_url_propagates(self, mock_publish, mock_get, analysis_dir: Path):
         """--ollama-url should configure the adapter's target URL."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
         mock_publish.return_value = {
             "video_record_id": "recNEW",
             "video_id": "KGHoVptow30",
@@ -395,6 +409,54 @@ class TestCLIEnrichmentFlags:
         assert rc == 0
         call_kwargs = mock_publish.call_args[1]
         assert call_kwargs["enrich_model"] == "llava:latest"
+
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_enrich_shots_passes_verify_model_true(self, mock_publish, mock_get, analysis_dir: Path):
+        """CLI should pass verify_model=True to make_ollama_enrich_fn when --enrich-shots is set."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+        ])
+        assert rc == 0
+        # verify_model=True should have triggered a GET /api/tags call
+        mock_get.assert_called_once()
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_enrich_shots_fails_fast_on_bad_model(self, mock_get, analysis_dir: Path):
+        """CLI should return 1 and not enter publish loop when model check fails."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-model", "nonexistent-model:v1",
+        ])
+        assert rc == 1
 
     @patch("publisher.cli.publish_to_airtable")
     def test_max_enrich_frames_flag(self, mock_publish, analysis_dir: Path):

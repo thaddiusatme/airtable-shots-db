@@ -168,6 +168,15 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - Clear error message: lists the bad model name + all available models
 - 10 new tests (7 pre-flight, 1 default model, 2 CLI verify wiring)
 
+### Slice 9: Force Re-enrichment + Prompt-Version-Aware Re-enrichment (GH-23)
+**Commit:** `6272445` | **Branch:** `fix/gh-28-ollama-model-tag-mismatch`
+
+- `force_reenrich=True` param on `publish_to_airtable()` — bypasses `is_shot_enriched()` skip logic
+- `--force-reenrich` CLI flag wired through
+- Prompt-version-aware re-enrichment: compares old `AI Prompt Version` against current `AI_PROMPT_VERSION`; stale shots are automatically re-enriched
+- Shots with the current prompt version are still skipped (preserving idempotency)
+- 7 new tests (3 force-reenrich, 3 prompt-version, 1 CLI flag)
+
 ---
 
 ## Test Coverage
@@ -175,12 +184,12 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 | Test File | Enrichment Tests | Total |
 |---|---|---|
 | `tests/test_shot_package.py` | 62 | 62 |
-| `tests/test_publisher.py` | 30 (10 integration + 8 idempotency + 6 observability + 6 unit) | 102 |
+| `tests/test_publisher.py` | 37 (10 integration + 8 idempotency + 6 observability + 6 unit + 3 force-reenrich + 3 prompt-version + 1 summary) | 109 |
 | `tests/test_llm_enricher.py` | 27 (+7 pre-flight) | 27 |
-| `tests/test_publisher_cli.py` | 10 (+3 model verify/default) | 13 |
+| `tests/test_publisher_cli.py` | 11 (+3 model verify/default + 1 force-reenrich) | 22 |
 | `tests/test_setup_airtable.py` | 11 (schema + contract) | 19 |
-| **Total enrichment-related** | **140** | |
-| **Current validated in-scope suite** | | **235** |
+| **Total enrichment-related** | **148** | |
+| **Current validated in-scope suite** | | **261** |
 
 ---
 
@@ -234,10 +243,10 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 
 ### Not Yet Implemented
 
-- [ ] **`--force-reenrich` CLI flag** — bypass skip logic, re-enrich all shots
-- [ ] **Prompt version-aware re-enrichment** — auto re-enrich when `AI_PROMPT_VERSION` changes
-- [ ] **Late-shot runtime root cause** — re-run the stalled capture with new observability and confirm whether the hang is a true timeout, provider stall, or payload-size issue
-- [ ] **Additional live validation** — confirm post-`S10` behavior on the same 16-shot capture with the new observability in place
+- [x] **`--force-reenrich` CLI flag** — bypass skip logic, re-enrich all shots (Slice 9, `6272445`)
+- [x] **Prompt version-aware re-enrichment** — auto re-enrich when `AI_PROMPT_VERSION` changes (Slice 9, `6272445`)
+- [x] **Late-shot runtime root cause** — resolved by GH-28 model tag fix (post-S10 stall was `llava:7b` 404 loop)
+- [ ] **Live re-validation** — re-run the 16-shot capture with corrected `llava:latest` default to confirm
 - [ ] **Chrome extension integration** — trigger enrichment from extension pipeline
 - [ ] **Cost/rate limiting** — track token usage, add configurable rate limits
 - [ ] **Batch enrichment** — enrich shots from multiple videos in one run
@@ -246,8 +255,6 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 
 - Shot matching uses Shot Label (e.g., "S01") which is deterministic from `sceneIndex`. If scene ordering changes between analysis runs, label matching could mismatch.
 - Current production adapter path is Ollama-specific; additional providers are not yet implemented.
-- GH-27 observability makes stalls visible, but does not by itself guarantee the late-shot root cause is fixed until the live capture is re-run.
-- No prompt version migration path — changing `AI_PROMPT_VERSION` currently doesn't trigger re-enrichment.
 
 ---
 
@@ -264,8 +271,8 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 - [x] At least one real LLM client adapter works end-to-end
 - [x] A failing or stalled shot is identifiable from logs by shot label and progress counter
 - [x] Timeout / failure state is surfaced clearly instead of the run appearing frozen
-- [ ] `--force-reenrich` flag available for manual override
-- [ ] Prompt version changes trigger selective re-enrichment
+- [x] `--force-reenrich` flag available for manual override
+- [x] Prompt-version-aware re-enrichment triggers automatically when `AI_PROMPT_VERSION` changes
 
 ---
 
@@ -282,7 +289,8 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 | `d719522` | Mar 10, 2026 | Per-shot observability + timeout/failure surfacing | 8 |
 | `aae72af` | Mar 10, 2026 | Default model tag fix + pre-flight model check (GH-28) | 8 |
 | `0f6045b` | Mar 10, 2026 | Wire verify_model=True into CLI for fail-fast (GH-28) | 2 |
-| **Total** | | | **140** |
+| `6272445` | Mar 10, 2026 | --force-reenrich + prompt-version-aware re-enrichment (GH-23) | 7 |
+| **Total** | | | **147** |
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Last Updated:** March 10, 2026  
 **Branch:** `fix/gh-28-ollama-model-tag-mismatch`  
-**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment Core COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | Pipeline Resumption Complete | Chrome Extension Integrated
+**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | Pipeline Resumption Complete | Chrome Extension Integrated
 
 ---
 
@@ -96,7 +96,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 - `publisher/cli.py` — CLI with publish/frames/transcript/enrichment flags; pre-flight model check enabled when `--enrich-shots` is set
 - `publisher/__main__.py` — `python -m publisher` support
 
-**Tests:** 235 validated in-scope passing (140 enrichment-related)
+**Tests:** 261 validated in-scope passing (148 enrichment-related)
 
 **Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered with live Ollama adapter and pre-flight model check. Live re-validation with corrected `llava:latest` default pending.
 
@@ -197,13 +197,13 @@ R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
 
 ## 🧪 Test Coverage
 
-- **Enrichment-related coverage:** 140 tests
+- **Enrichment-related coverage:** 148 tests
   - `tests/test_shot_package.py` — 62
-  - `tests/test_publisher.py` — 30 enrichment/idempotency/observability tests
+  - `tests/test_publisher.py` — 37 enrichment/idempotency/observability/force-reenrich/prompt-version tests
   - `tests/test_llm_enricher.py` — 27 adapter/pre-flight tests
-  - `tests/test_publisher_cli.py` — 10 CLI enrichment flag tests
+  - `tests/test_publisher_cli.py` — 11 CLI enrichment flag tests
   - `tests/test_setup_airtable.py` — 11 schema/contract tests
-- **Total validated in-scope suite:** 235 tests passing
+- **Total validated in-scope suite:** 261 tests passing
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
 Pipeline state tests use `node:test` with temp directories (no external deps).  
@@ -290,6 +290,7 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
+| `6272445` | feat(GH-23): --force-reenrich flag + prompt-version-aware re-enrichment |
 | `0f6045b` | feat(GH-28): wire verify_model=True into CLI for fail-fast model check |
 | `aae72af` | fix(GH-28): change default model tag to llava:latest + pre-flight check |
 | `d89c759` | feat(GH-23): preserve shot enrichment across idempotent re-runs |
@@ -333,6 +334,8 @@ airtable-shots-db/
 - **GH-28 model tag fix:** Default model changed from `llava:7b` to `llava:latest`. Pre-flight model availability check via `GET /api/tags` runs before the publish loop when `--enrich-shots` is set. Fails fast with `rc=1` if model not found.
 - **GH-27 observability landed:** The publisher logs shot label + progress before each request, records per-shot elapsed time, and writes shot-labeled `AI Error` values for failed enrichments.
 - **Late-shot root cause may be resolved:** The post-`S10` stall may have been caused by the `llava:7b` 404 retry loop. Needs live re-validation with the corrected default.
+- **`--force-reenrich` flag available:** Bypasses all skip logic to re-enrich all shots regardless of existing enrichment state.
+- **Prompt-version-aware re-enrichment:** When `AI_PROMPT_VERSION` changes, stale shots are automatically re-enriched on the next run without needing `--force-reenrich`.
 
 ### R2 Upload
 - **`source .env` doesn't export vars:** Use `set -a && source .env && set +a` for subprocess.

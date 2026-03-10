@@ -11,6 +11,8 @@ Tests cover:
 """
 
 import json
+import logging
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1635,6 +1637,215 @@ class TestEnrichmentIdempotency:
 
         mock_shots.update.assert_not_called()
         assert result["shots_created"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Enrichment observability tests (GH-27: stall diagnosis)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentObservability:
+    """Tests for per-shot enrichment logging and error context.
+
+    GH-27: a 16-shot enrichment run stalled after S10 with no visible
+    progress or AI Error. These tests ensure:
+      - Shot label is logged BEFORE each enrichment request
+      - Progress counter (shot N of M) is logged
+      - Elapsed time is logged AFTER each enrichment completes
+      - AI Error field includes shot label for triage from Airtable
+      - A timed-out shot writes AI Error and allows later shots to proceed
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos and Shots tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Default: new video, 3 shots created
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    # -- Pre-request logging --
+
+    @patch("publisher.publish.Api")
+    def test_logs_shot_label_before_enrichment_request(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Shot label should appear in logs BEFORE enrich_fn is called."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        call_order = []
+
+        def tracking_enrich_fn(prompt_dict):
+            # Record what was logged before this call
+            call_order.append(list(caplog.messages))
+            return self.VALID_LLM_RESPONSE
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=tracking_enrich_fn,
+            )
+
+        # Before the first enrich_fn call, "S01" should appear in logs
+        assert len(call_order) >= 1
+        pre_first_call_msgs = " ".join(call_order[0])
+        assert "S01" in pre_first_call_msgs, (
+            f"Shot label 'S01' not logged before first enrichment request. "
+            f"Log messages before call: {call_order[0]}"
+        )
+
+    @patch("publisher.publish.Api")
+    def test_logs_progress_counter(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Logs should include progress like '1/3', '2/3', '3/3'."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        all_msgs = " ".join(caplog.messages)
+        assert "1/3" in all_msgs, f"Progress '1/3' not found in logs: {caplog.messages}"
+        assert "3/3" in all_msgs, f"Progress '3/3' not found in logs: {caplog.messages}"
+
+    # -- Post-request elapsed time --
+
+    @patch("publisher.publish.Api")
+    def test_logs_elapsed_time_after_enrichment(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Logs should include elapsed time (in seconds) after each enrichment."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        # At least one message should contain an explicit elapsed time like "1.2s" or "0.01s"
+        all_msgs = " ".join(caplog.messages)
+        has_elapsed = re.search(r"\d+\.\d+s", all_msgs)
+        assert has_elapsed, (
+            f"No elapsed time (e.g., '0.12s') found in enrichment logs: {caplog.messages}"
+        )
+
+    # -- AI Error includes shot label --
+
+    @patch("publisher.publish.Api")
+    def test_ai_error_includes_shot_label(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """AI Error field should include the shot label for Airtable triage."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(
+            side_effect=RuntimeError("Ollama request timed out after 600s")
+        )
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # First shot's AI Error should include the shot label
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Error" in fields
+        assert "S01" in fields["AI Error"], (
+            f"Shot label 'S01' not in AI Error: {fields['AI Error']}"
+        )
+
+    # -- Timeout writes AI Error and continues --
+
+    @patch("publisher.publish.Api")
+    def test_timeout_writes_ai_error_and_continues_to_next_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """A RuntimeError timeout on S02 should write AI Error and still enrich S03."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            RuntimeError("Ollama request timed out after 600s"),
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # All 3 shots should be updated (2 success + 1 error)
+        assert mock_shots.update.call_count == 3
+        # S02 should have AI Error with shot label
+        second_update = mock_shots.update.call_args_list[1]
+        _, fields = second_update[0]
+        assert "AI Error" in fields
+        assert "S02" in fields["AI Error"]
+        # Result should show 2 enriched
+        assert result["shots_enriched"] == 2
+
+    # -- Failure log includes shot label --
+
+    @patch("publisher.publish.Api")
+    def test_failure_log_includes_shot_label(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Warning log for failed enrichment should include shot label, not just record ID."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(
+            side_effect=RuntimeError("Ollama request timed out")
+        )
+
+        with caplog.at_level(logging.WARNING, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        # Warning messages should include shot labels, not just record IDs
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("S01" in msg for msg in warning_msgs), (
+            f"Shot label 'S01' not in warning messages: {warning_msgs}"
+        )
 
 
 # ---------------------------------------------------------------------------

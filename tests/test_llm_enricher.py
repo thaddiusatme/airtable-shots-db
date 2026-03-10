@@ -257,6 +257,32 @@ class TestOllamaErrorHandling:
             fn(SAMPLE_PROMPT)
 
     @patch("publisher.llm_enricher.requests.post")
+    def test_timeout_error_includes_model_name(self, mock_post, tmp_path):
+        """Timeout RuntimeError should include the model name for diagnosis."""
+        import requests
+
+        mock_post.side_effect = requests.Timeout("Read timed out")
+        fn = make_ollama_enrich_fn(
+            capture_dir=str(tmp_path),
+            model="llava:7b",
+        )
+        with pytest.raises(RuntimeError, match="llava:7b"):
+            fn(SAMPLE_PROMPT)
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_connection_error_includes_model_name(self, mock_post, tmp_path):
+        """Connection RuntimeError should include the model name for diagnosis."""
+        import requests
+
+        mock_post.side_effect = requests.ConnectionError("Connection refused")
+        fn = make_ollama_enrich_fn(
+            capture_dir=str(tmp_path),
+            model="llava:13b",
+        )
+        with pytest.raises(RuntimeError, match="llava:13b"):
+            fn(SAMPLE_PROMPT)
+
+    @patch("publisher.llm_enricher.requests.post")
     def test_missing_frame_file_skipped(self, mock_post, tmp_path):
         """If a referenced frame file doesn't exist, it should be skipped (not crash)."""
         mock_post.return_value = MagicMock(

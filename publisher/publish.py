@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -535,6 +536,7 @@ def publish_to_airtable(
 
             manifest_frame_map_enrich = get_manifest_frame_map(capture_dir)
 
+            total_shots = len(created)
             for i, shot_record in enumerate(created):
                 scene = analysis["scenes"][i]
                 shot_label = f"S{scene['sceneIndex'] + 1:02d}"
@@ -558,6 +560,13 @@ def publish_to_airtable(
                     )
                     continue
 
+                logger.info(
+                    "Enriching %s (%d/%d) — requesting LLM analysis",
+                    shot_label,
+                    i + 1,
+                    total_shots,
+                )
+                shot_start = time.monotonic()
                 try:
                     frames = collect_shot_frames(
                         scene,
@@ -570,6 +579,7 @@ def publish_to_airtable(
                     )
                     prompt = build_enrichment_prompt(package)
                     raw_response = enrich_fn(prompt)
+                    elapsed = time.monotonic() - shot_start
                     fields = parse_llm_response(raw_response)
                     fields["AI Prompt Version"] = AI_PROMPT_VERSION
                     fields["AI Updated At"] = (
@@ -580,19 +590,25 @@ def publish_to_airtable(
                     shots_table.update(shot_record["id"], fields)
                     shots_enriched_count += 1
                     logger.info(
-                        "Enriched shot %s (%s)",
-                        shot_record["id"],
-                        scene.get("sceneIndex", i),
+                        "Enriched %s (%d/%d) in %.1fs",
+                        shot_label,
+                        i + 1,
+                        total_shots,
+                        elapsed,
                     )
                 except Exception as e:
+                    elapsed = time.monotonic() - shot_start
                     logger.warning(
-                        "Enrichment failed for shot %s: %s",
-                        shot_record["id"],
+                        "Enrichment failed for %s (%d/%d) after %.1fs: %s",
+                        shot_label,
+                        i + 1,
+                        total_shots,
+                        elapsed,
                         e,
                     )
                     shots_table.update(
                         shot_record["id"],
-                        {"AI Error": f"Enrichment failed: {e}"},
+                        {"AI Error": f"Enrichment failed for {shot_label}: {e}"},
                     )
 
         return {

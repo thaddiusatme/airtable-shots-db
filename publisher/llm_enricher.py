@@ -77,15 +77,17 @@ def make_ollama_enrich_fn(
             resp.raise_for_status()
         except requests.ConnectionError as e:
             raise RuntimeError(
-                f"Ollama connection failed at {ollama_url} — is Ollama running? {e}"
+                f"Ollama connection failed at {ollama_url} (model={model}) "
+                f"— is Ollama running? {e}"
             ) from e
         except requests.Timeout as e:
             raise RuntimeError(
-                f"Ollama request timed out after {timeout}s: {e}"
+                f"Ollama request timed out after {timeout}s "
+                f"(model={model}): {e}"
             ) from e
         except Exception as e:
             raise RuntimeError(
-                f"Ollama request failed: {e}"
+                f"Ollama request failed (model={model}): {e}"
             ) from e
 
         data = resp.json()

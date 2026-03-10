@@ -81,7 +81,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 
 **Shot-Level LLM Enrichment (GH-23):**
 - `publisher/shot_package.py` assembles full shot packages (all frames + transcript slice)
-- Structured prompt payload builder with `AI_PROMPT_VERSION = "1.0"`
+- Structured prompt payload builder with `AI_PROMPT_VERSION = "1.1"`
 - Response parser maps 13 LLM keys into Airtable `Shots` fields + `AI JSON`
 - `publish_to_airtable()` supports `enrich_shots`, `enrich_fn`, and `enrich_model`
 - Idempotent re-runs preserve old enrichment and skip already-enriched shots
@@ -179,11 +179,11 @@ Example: `KGHoVptow30/frame_00000_t000.000s.png`
 
 **Environment Variables (.env):**
 ```bash
-R2_ACCOUNT_ID=7c07e5e41d224c81d5b4e8d9c6a5c97c
-R2_ACCESS_KEY_ID=4b8055a16aabe90e19506bc28e406b64
-R2_SECRET_ACCESS_KEY=bf987c7b16a96203e4be415211e49c761f360fe70dcc27ed4e8993bed9a5c399
+R2_ACCOUNT_ID=your_account_id
+R2_ACCESS_KEY_ID=your_access_key_id
+R2_SECRET_ACCESS_KEY=your_secret_access_key
 R2_BUCKET_NAME=shot-image
-R2_PUBLIC_URL=https://pub-f300f74e400541688f70ad8bb42b106e.r2.dev
+R2_PUBLIC_URL=https://pub-xxx.r2.dev
 ```
 
 **boto3 Configuration:**

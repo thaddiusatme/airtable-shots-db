@@ -2,9 +2,9 @@
 
 Automated pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions, frame thumbnails, and per-second frame timeline records.
 
-**Status:** Frames Feature Complete (TDD iterations 1–4) | Pipeline Resumption Complete  
-**Tests:** 195 passing (190 Python + 24 Node.js)  
-**Open Issues:** [#18 Frames Table Schema](https://github.com/thaddiusatme/airtable-shots-db/issues/18) | [#19 Chrome Extension Integration](https://github.com/thaddiusatme/airtable-shots-db/issues/19)
+**Status:** Frames Feature Complete | Shot-Level LLM Enrichment Complete | Pipeline Resumption Complete  
+**Tests:** 261 validated in-scope passing (148 enrichment-related)  
+**Current Focus:** Live validation of the completed enrichment pipeline, then Chrome extension integration
 
 ## Quick Start
 
@@ -30,6 +30,16 @@ export $(cat .env | xargs)
   --merge-scenes \
   --max-concurrent-uploads 8 \
   --verbose
+
+# 5. Optional: publish with shot enrichment
+.venv/bin/python -m publisher \
+  --capture-dir captures/VIDEO_ID_*/ \
+  --api-key "$AIRTABLE_API_KEY" \
+  --base-id "$AIRTABLE_BASE_ID" \
+  --skip-frames \
+  --enrich-shots \
+  --enrich-model llava:latest \
+  --verbose
 ```
 
 ## Pipeline Overview
@@ -37,7 +47,7 @@ export $(cat .env | xargs)
 **Four-component system:**
 1. **Capture** (TypeScript/Playwright) → Frame PNGs + manifest.json
 2. **Analyze** (Python/OpenCV/Ollama) → Scene boundaries + AI descriptions → analysis.json
-3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images
+3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images + optional shot enrichment
 4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server)
 
 ## Prerequisites
@@ -79,7 +89,7 @@ R2_PUBLIC_URL=https://pub-xxx.r2.dev
 YT_FRAME_POC_PATH=/path/to/yt-frame-poc
 ```
 
-> **Note:** Use `export $(cat .env | xargs)` to export env vars for Python subprocesses.
+> **Note:** Use `set -a && source .env && set +a` to export env vars for Python subprocesses.
 
 ### 3. Pipeline Server (Chrome Extension Backend)
 
@@ -94,6 +104,7 @@ node server.js  # Runs on http://127.0.0.1:3333
 ```bash
 # Install Ollama: https://ollama.ai
 ollama pull llama3.2-vision:latest
+ollama pull llava:latest
 ollama serve  # Runs on localhost:11434
 # Use --skip-vlm flag to bypass if Ollama is not running
 ```
@@ -141,6 +152,12 @@ export $(cat .env | xargs)
 - `--min-scene-duration N` — Minimum scene duration in seconds (default: 5.0)
 - `--max-concurrent-uploads N` — Parallel R2 upload workers (default: 1, recommended: 8)
 - `--frame-sampling N` — Create 1 Frame per N seconds (default: 1)
+- `--enrich-shots` — Run shot-level LLM enrichment after creating Shots
+- `--enrich-model NAME` — Ollama model for enrichment (default: `llava:latest`)
+- `--ollama-url URL` — Override Ollama generate endpoint
+- `--ollama-timeout N` — Timeout in seconds for each enrichment request
+- `--max-enrich-frames N` — Cap frames sent to the LLM per shot
+- `--force-reenrich` — Re-enrich all shots even if enrichment already exists
 - `--verbose` / `-v` — Debug logging
 
 ## Testing
@@ -159,12 +176,14 @@ cd pipeline-server && npm test
 .venv/bin/python -m pytest tests/ --cov=publisher --cov=analyzer --cov=segmenter
 ```
 
-**Test Coverage:** 195 tests (190 Python + 24 Node.js), all passing
+**Test Coverage:** 261 validated in-scope tests passing
 
 | Module | Count |
 |--------|-------|
-| Publisher (core + frames) | 54 |
-| Publisher (CLI) | 11 |
+| Publisher (core + frames + enrichment) | 109 |
+| Publisher (CLI) | 22 |
+| Publisher (LLM enricher) | 27 |
+| Publisher (shot package) | 62 |
 | Publisher (R2 uploader) | 23 |
 | Publisher (frame helpers) | 12 |
 | Analyzer (scene detector) | 29 |
@@ -182,8 +201,10 @@ airtable-shots-db/
 ├── analyzer/               # Scene detection + AI descriptions
 │   ├── scene_detector.py   # OpenCV histogram analysis
 │   └── vlm_describer.py    # Ollama VLM integration
-├── publisher/              # Airtable + R2 integration
-│   ├── publish.py          # Core publisher (Videos, Shots, Frames)
+├── publisher/              # Airtable + R2 + enrichment integration
+│   ├── publish.py          # Core publisher (Videos, Shots, Frames, enrichment)
+│   ├── shot_package.py     # Shot packaging, prompt builder, response parser
+│   ├── llm_enricher.py     # Ollama enrichment adapter + model verification
 │   ├── r2_uploader.py      # R2 uploads (scenes + all frames, parallel)
 │   ├── frame_helpers.py    # Timestamp parsing from filenames
 │   └── cli.py              # CLI entry point
@@ -196,15 +217,19 @@ airtable-shots-db/
 │   └── pipeline-state.js   # Checkpoint save/load/resume
 ├── chrome-extension/       # Browser extension for pipeline trigger
 ├── captures/               # Capture directories (gitignored)
-├── tests/                  # 190 Python unit tests (all mocked)
+├── tests/                  # Python unit/integration-style tests (all mocked external APIs)
+├── docs/                   # Issue docs, closing comments, and implementation notes
 ├── .env                    # Credentials (gitignored)
 ├── requirements.txt        # Python dependencies
-└── CURRENT_STATE.md        # Detailed status, architecture, roadmap
+├── CURRENT_STATE.md        # Detailed status, architecture, roadmap
+└── NEXT_SESSION.md         # Next-phase handoff and priorities
 ```
 
 ## Documentation
 
 - **[CURRENT_STATE.md](./CURRENT_STATE.md)** — Full project status, schema, test coverage, roadmap
+- **[NEXT_SESSION.md](./NEXT_SESSION.md)** — Current handoff and next-phase priorities
+- **[docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md](./docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md)** — End-to-end enrichment implementation history
 - **[docs/GITHUB_ISSUE_FRAMES_TABLE_SCHEMA.md](./docs/GITHUB_ISSUE_FRAMES_TABLE_SCHEMA.md)** — Frames table schema spec (GH #18)
 - **[docs/GITHUB_ISSUE_FRAMES_CHROME_EXTENSION.md](./docs/GITHUB_ISSUE_FRAMES_CHROME_EXTENSION.md)** — Chrome extension integration (GH #19)
 - **[docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md](./docs/GITHUB_ISSUE_PIPELINE_RESUMPTION.md)** — Pipeline resumption spec (GH #16)

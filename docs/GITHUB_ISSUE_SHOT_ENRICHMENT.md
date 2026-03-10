@@ -16,12 +16,16 @@ The core GH-23 enrichment architecture is implemented and test-covered:
 - publisher integration
 - schema alignment for the 4 new multiline enrichment fields
 - idempotent re-run behavior that preserves old enrichment
+- live Ollama adapter + CLI wiring for enrichment
+- runtime observability for per-shot enrichment progress and failures
 
-The main follow-up work is production wiring:
+A fresh live validation confirmed the parser/write path works end-to-end with Ollama for completed shots (`S01` through `S10` in the latest run), and GH-27 added per-shot logging / timeout surfacing so later stalls become diagnosable instead of appearing frozen.
 
-- real LLM client adapter
-- CLI exposure for enrichment
+The main follow-up work is now production hardening:
+
+- re-run the stalled capture with new observability to diagnose the late-shot runtime issue
 - optional force re-enrichment / prompt-version-aware re-enrichment
+- structured telemetry / richer runtime diagnostics
 
 ---
 
@@ -84,7 +88,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 
 ## Implementation — Completed Slices
 
-### Slice 1: Shot Package Contract ✅
+### Slice 1: Shot Package Contract 
 **Commit:** `0719744` | **Branch:** `feature/shot-package-llm-enrichment`
 
 - `publisher/shot_package.py` — new module
@@ -94,7 +98,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - `SHOT_ENRICHMENT_FIELDS` — explicit LLM key → Airtable column mapping
 - 41 new tests in `tests/test_shot_package.py`
 
-### Slice 2: Prompt Payload Builder ✅
+### Slice 2: Prompt Payload Builder 
 **Commit:** `bb1aaf9` | **Branch:** `feature/shot-package-llm-enrichment`
 
 - `AI_PROMPT_VERSION = "1.0"` constant
@@ -104,7 +108,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - Handles empty frames/transcript edge cases
 - 21 new tests in `TestBuildEnrichmentPrompt`
 
-### Slice 3: Publisher Integration ✅
+### Slice 3: Publisher Integration 
 **Commit:** `9c31802` | **Branch:** `feature/shot-package-llm-enrichment`
 
 - `publish_to_airtable()` gains `enrich_shots`, `enrich_fn`, `enrich_model` params
@@ -114,7 +118,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - `shots_enriched` count in return summary
 - 10 new tests in `TestEnrichmentIntegration`
 
-### Slice 4: Airtable Schema Alignment ✅
+### Slice 4: Airtable Schema Alignment 
 **Commit:** `45bc4f2` | **Branch:** `feature/airtable-shot-enrichment-schema`
 
 - `ENRICHMENT_FIELD_DEFINITIONS` constant in `setup_airtable.py`
@@ -125,7 +129,7 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - Contract tests verifying all enrichment fields are provisioned
 - 11 new tests in `test_setup_airtable.py`
 
-### Slice 5: Idempotent Re-run ✅
+### Slice 5: Idempotent Re-run 
 **Commit:** `d89c759` | **Branch:** `feature/airtable-shot-enrichment-idempotency`
 
 - `is_shot_enriched(fields)` — pure helper; returns True if `AI Prompt Version` is truthy
@@ -136,6 +140,25 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 - `shots_skipped_enrichment` count in return summary
 - 8 integration + 6 unit tests (14 new)
 
+### Slice 6: Live Ollama Adapter + CLI Wiring 
+**Commit:** `78d07a2` | **Branch:** `feature/llm-enrichment-live-demo-wiring`
+
+- `publisher/llm_enricher.py` — `make_ollama_enrich_fn()` adapter for Ollama `/api/generate`
+- `publisher/cli.py` exposes `--enrich-shots`, `--enrich-provider`, `--enrich-model`, `--ollama-url`, `--ollama-timeout`, `--max-enrich-frames`
+- Frame references are base64-encoded and sent as Ollama `images`
+- Adapter remains behind injected `enrich_fn` boundary
+- 25 new tests across `tests/test_llm_enricher.py` and `tests/test_publisher_cli.py`
+
+### Slice 7: Runtime Observability / Stall Hardening 
+**Commit:** `d719522` | **Branch:** `fix/gh-27-enrichment-stall-observability`
+
+- Pre-request log with shot label and progress counter before each LLM request
+- Per-shot elapsed time logging after success or failure
+- Failure logs include shot label, progress position, and elapsed time
+- `AI Error` now includes the shot label for Airtable-side triage
+- Ollama adapter error messages now include the active model name
+- 8 new tests (6 observability + 2 adapter error-context tests)
+
 ---
 
 ## Test Coverage
@@ -143,10 +166,12 @@ Add an **opt-in LLM enrichment pipeline** to the publisher that:
 | Test File | Enrichment Tests | Total |
 |---|---|---|
 | `tests/test_shot_package.py` | 62 | 62 |
-| `tests/test_publisher.py` | 24 (10 integration + 8 idempotency + 6 unit) | 96 |
+| `tests/test_publisher.py` | 30 (10 integration + 8 idempotency + 6 observability + 6 unit) | 102 |
+| `tests/test_llm_enricher.py` | 20 | 20 |
+| `tests/test_publisher_cli.py` | 7 | 18 |
 | `tests/test_setup_airtable.py` | 11 (schema + contract) | 19 |
-| **Total enrichment-related** | **97** | |
-| **Total project** | | **297** |
+| **Total enrichment-related** | **130** | |
+| **Current validated in-scope suite** | | **225** |
 
 ---
 
@@ -202,8 +227,8 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 
 - [ ] **`--force-reenrich` CLI flag** — bypass skip logic, re-enrich all shots
 - [ ] **Prompt version-aware re-enrichment** — auto re-enrich when `AI_PROMPT_VERSION` changes
-- [ ] **End-to-end validation** — test with real LLM API (OpenAI / Anthropic / local Ollama)
-- [ ] **CLI wiring for enrichment** — `publish_to_airtable()` supports enrichment params, but `publisher/cli.py` does not yet expose a production-ready LLM adapter path
+- [ ] **Late-shot runtime root cause** — re-run the stalled capture with new observability and confirm whether the hang is a true timeout, provider stall, or payload-size issue
+- [ ] **Additional live validation** — confirm post-`S10` behavior on the same 16-shot capture with the new observability in place
 - [ ] **Chrome extension integration** — trigger enrichment from extension pipeline
 - [ ] **Cost/rate limiting** — track token usage, add configurable rate limits
 - [ ] **Batch enrichment** — enrich shots from multiple videos in one run
@@ -211,7 +236,8 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 ### Known Limitations
 
 - Shot matching uses Shot Label (e.g., "S01") which is deterministic from `sceneIndex`. If scene ordering changes between analysis runs, label matching could mismatch.
-- `enrich_fn` is injected but no production LLM client adapter exists yet. Tests use mocks.
+- Current production adapter path is Ollama-specific; additional providers are not yet implemented.
+- GH-27 observability makes stalls visible, but does not by itself guarantee the late-shot root cause is fixed until the live capture is re-run.
 - No prompt version migration path — changing `AI_PROMPT_VERSION` currently doesn't trigger re-enrichment.
 
 ---
@@ -226,7 +252,9 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 - [x] Old enrichment data is preserved when shots are recreated
 - [x] Airtable schema includes all required enrichment fields
 - [x] `shots_enriched` and `shots_skipped_enrichment` counts in summary
-- [ ] At least one real LLM client adapter works end-to-end
+- [x] At least one real LLM client adapter works end-to-end
+- [x] A failing or stalled shot is identifiable from logs by shot label and progress counter
+- [x] Timeout / failure state is surfaced clearly instead of the run appearing frozen
 - [ ] `--force-reenrich` flag available for manual override
 - [ ] Prompt version changes trigger selective re-enrichment
 
@@ -241,7 +269,9 @@ AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
 | `9c31802` | Mar 8, 2026 | Publisher enrichment integration | 10 |
 | `45bc4f2` | Mar 8, 2026 | Schema alignment (4 missing fields) | 11 |
 | `d89c759` | Mar 8, 2026 | Idempotent re-run (skip enriched shots) | 14 |
-| **Total** | | | **97** |
+| `78d07a2` | Mar 9, 2026 | Live Ollama adapter + CLI wiring | 25 |
+| `d719522` | Mar 10, 2026 | Per-shot observability + timeout/failure surfacing | 8 |
+| **Total** | | | **130** |
 
 ---
 

@@ -324,7 +324,9 @@ airtable-shots-db/
 - **`AI Prompt Version` is the enrichment signal:** Shots with this field set are considered enriched and are skipped on re-run unless explicit re-enrichment logic is added.
 - **Error-only shots retry automatically:** If an old shot has `AI Error` but no `AI Prompt Version`, it is eligible for re-enrichment on the next run.
 - **`Shot Label` matching assumes stable scene ordering:** If scene boundaries change between runs, preserved enrichment could attach to the wrong recreated shot.
-- **CLI gap still exists:** `publish_to_airtable()` supports enrichment parameters, but `publisher/cli.py` does not yet expose a production-ready LLM adapter path.
+- **CLI wiring exists for Ollama:** `publisher/cli.py` now exposes `--enrich-shots`, provider/model/timeout flags, and wires through `make_ollama_enrich_fn()`.
+- **GH-27 observability landed:** The publisher logs shot label + progress before each request, records per-shot elapsed time, and writes shot-labeled `AI Error` values for failed enrichments.
+- **Late-shot root cause is still open:** The fresh 16-shot live run still needs to be re-run with the new observability in place to determine whether the post-`S10` stall is a timeout, provider stall, or payload-size issue.
 
 ### R2 Upload
 - **`source .env` doesn't export vars:** Use `set -a && source .env && set +a` for subprocess.
@@ -336,9 +338,9 @@ airtable-shots-db/
 
 ---
 
-## 🚀 Next Steps (Priority Order)
+## Next Steps (Priority Order)
 
-### P0 — Core Functionality ✅ COMPLETE
+### P0 — Core Functionality 
 - [x] Phase 3: Airtable Publisher (metadata)
 - [x] R2 Image Uploads (Scene Start/End attachments)
 - [x] Pipeline Server (Express orchestrator + Chrome extension trigger)
@@ -359,9 +361,9 @@ airtable-shots-db/
 - [ ] **`--force-step` CLI flag** (re-run specific steps on demand)
 - [ ] **Idempotent R2 uploads** (HEAD request before upload, skip if exists)
 - [ ] **Thumbnail generation** (resize frames to 640px before upload, save bandwidth)
-- [ ] **Logging improvements** (structured JSON logs, log levels)
+- [ ] **Logging improvements** (structured JSON logs, log levels beyond current GH-27 enrichment observability)
 - [ ] **End-to-end integration test** (Capture → Analyze → Publish → Frames on fresh video)
-- [ ] **Real LLM adapter + CLI wiring for enrichment** (expose a production-ready `--enrich-shots` path in `publisher/cli.py`)
+- [ ] **Late-shot runtime diagnosis / live re-run** (re-run the 16-shot Ollama capture with GH-27 observability enabled)
 - [ ] **`--force-reenrich` flag** (manual override for already-enriched shots)
 - [ ] **Prompt version-aware re-enrichment** (selective re-run when `AI_PROMPT_VERSION` changes)
 

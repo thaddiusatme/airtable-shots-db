@@ -1,8 +1,8 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** March 10, 2026  
-**Branch:** `fix/gh-28-ollama-model-tag-mismatch`  
-**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | Pipeline Resumption Complete | Chrome Extension Integrated
+**Last Updated:** March 12, 2026  
+**Branch:** `fix/gh-38-structured-outputs-success-criteria`  
+**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | ✅ One-Click Orchestrator Enrichment Wired (GH-30) | ✅ Structured Outputs + Success Criteria Fix (GH-38) | Pipeline Resumption Complete | Chrome Extension Integrated
 
 ---
 
@@ -14,7 +14,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 1. **Capture** (TypeScript/Playwright) → Frame PNGs + manifest.json
 2. **Analyze** (Python/OpenCV/Ollama) → Scene boundaries + AI descriptions → analysis.json
 3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images + optional shot enrichment
-4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server at :3333)
+4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server at :3333), now routed through orchestrator-driven shot enrichment during publish
 
 ---
 
@@ -67,6 +67,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 **Status:** Feature-complete with R2 image attachments and shot-enrichment core
 
 **Core Publisher:**
+
 - Reads `analysis.json` from capture directory
 - Upserts Video record (by Video ID)
 - Creates 1 Shot record per scene (was 2 per scene, refactored)
@@ -74,20 +75,25 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 - Dry-run mode for preview
 
 **R2 Image Upload (NEW):**
+
 - Uploads boundary frame PNGs to Cloudflare R2
 - Deduplicates shared frames (67 uploaded for 34 scenes)
 - Attaches Scene Start / Scene End thumbnails to Shot records
 - Optional `--skip-images` flag for metadata-only publish
 
-**Shot-Level LLM Enrichment (GH-23):**
+**Shot-Level LLM Enrichment (GH-23, GH-38):**
+
 - `publisher/shot_package.py` assembles full shot packages (all frames + transcript slice)
-- Structured prompt payload builder with `AI_PROMPT_VERSION = "1.1"`
+- Structured prompt payload builder with `AI_PROMPT_VERSION = "1.2"` (bumped for structured output contract)
 - Response parser maps 13 LLM keys into Airtable `Shots` fields + `AI JSON`
 - `publish_to_airtable()` supports `enrich_shots`, `enrich_fn`, and `enrich_model`
 - Idempotent re-runs preserve old enrichment and skip already-enriched shots
 - Schema helper adds missing enrichment fields to existing bases
+- **NEW (GH-38):** Ollama structured outputs via `format` JSON schema + `temperature=0` for deterministic, valid JSON
+- **NEW (GH-38):** Success criteria fix — `AI Prompt Version` only set on successful parse (no `AI Error`)
 
 **Module Structure:**
+
 - `publisher/publish.py` — Core publisher (Videos, Shots, Frames + enrichment + idempotency)
 - `publisher/shot_package.py` — Shot package assembly, prompt builder, response parser
 - `publisher/r2_uploader.py` — R2 uploads for scene boundaries + all frames (parallel support)
@@ -98,7 +104,24 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 
 **Tests:** 261 validated in-scope passing (148 enrichment-related)
 
-**Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered with live Ollama adapter and pre-flight model check. Live re-validation with corrected `llava:latest` default pending.
+**Real-data validation:** Frames pipeline validated end-to-end; shot enrichment core is implemented and test-covered with live Ollama adapter and pre-flight model check. Issue #30 live validation confirmed that orchestrator-triggered publish now passes `--enrich-shots` / `--enrich-model`, shows enrichment in job status, and performs per-shot enrichment in the real one-click path.
+
+---
+
+### Phase 4: Pipeline Server + Chrome Extension Orchestration
+
+**Status:** Orchestrator enrichment wiring complete on `feature/issue-30-orchestrator-enrichment`
+
+- `pipeline-server/orchestrator.js` now always passes `--enrich-shots` and `--enrich-model` to the Python publisher
+- Orchestrator publish status explicitly shows enrichment and selected model (`llava:latest` by default)
+- `pipeline-server/test/test_orchestrator_postgres_cold_layer.js` includes a regression test asserting the publisher argv contract
+- Live validation on short existing capture `IuQBOpDCsKQ_*` reached full pipeline completion including `persist_postgres`
+- Live extension-triggered run `20c83926-2999-4c7c-8a7a-e67b357c782b` for `KcLG9QoSPFM` reached enriched publish and began `Enriching S01 (1/10)` after frame upload/Frame record creation
+
+**Important local validation note:** The successful end-to-end `persist_postgres` run required:
+
+- starting `pipeline-server` with `POSTGRES_URL=postgres://pipeline:pipeline@127.0.0.1:5432/airtable_shots`
+- bootstrapping the host Postgres instance (role/db/table/permissions) because host Postgres was occupying `127.0.0.1:5432` instead of the Docker Postgres container
 
 ---
 
@@ -428,6 +451,52 @@ set -a && source .env && set +a
 # Verbose logging
 .venv/bin/python -m publisher --capture-dir ./captures/abc123 -v
 ```
+
+---
+
+## ✅ Issue #38: Structured Outputs + Success Criteria Fix
+
+**Branch:** `fix/gh-38-structured-outputs-success-criteria`  
+**Commits:** `5bb4f8e` (P0-A/P0-B), `6346cb9` (lessons), `c7f1fcb` (A/B harness)  
+**Status:** Complete — ready for merge
+
+### What was fixed
+**P0-A: Ollama Structured Outputs**
+- Added `format: <json_schema>` to Ollama request payload (enforces valid JSON structure)
+- Added `options: {temperature: 0}` for deterministic output
+- Schema built dynamically from `SHOT_ENRICHMENT_FIELDS` (13 required properties)
+- `movement` field typed as `array`, all others `string`
+
+**P0-B: Enrichment Success Criteria**
+- Fixed bug where `AI Prompt Version` was set even on parse failure
+- Now gates success metadata (`AI Prompt Version`, `AI Updated At`, `AI Model`) on `"AI Error" not in fields`
+- Parse failures write only `AI Error`, do NOT increment `shots_enriched` count
+- This prevents failed enrichments from being marked as complete
+
+**P1: A/B Test Harness**
+- Added `scripts/ab_enrichment_test.py` for model comparison
+- Supports `--models llava:latest qwen2.5vl:7b` (or any Ollama models)
+- Outputs: valid JSON rate, avg fields/shot, avg time, field coverage bars, shot-by-shot comparison
+- `--show-details` flag prints per-shot enrichment values
+- `--output-json` exports full results for offline analysis
+
+### A/B Test Results (llava:latest vs qwen2.5vl:7b)
+**Video:** `6KktB5aNrjE` (5 shots)  
+**Config:** `--max-frames 4`, `--timeout 600s`
+
+| Model | Valid JSON | Avg Fields | Avg Time | Notes |
+|-------|------------|------------|----------|-------|
+| `llava:latest` | 5/5 (100%) | 13.0/13 | ~7.0s/shot | 4x faster |
+| `qwen2.5vl:7b` | 5/5 (100%) | 13.0/13 | ~29.7s/shot | Richer detail |
+
+**Key finding:** With structured outputs, **both models achieve 100% valid JSON and 100% field coverage**. The difference is speed (llava 4x faster) and semantic quality (qwen2.5vl more detailed descriptions).
+
+### Version bump
+- `AI_PROMPT_VERSION` bumped `1.1` → `1.2` (triggers auto re-enrichment of stale shots)
+
+### Tests
+- 12 new (6 structured output payload, 6 success criteria)
+- 232/232 in-scope pass, 0 regressions
 
 ---
 

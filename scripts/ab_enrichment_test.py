@@ -51,6 +51,7 @@ def run_enrichment_for_model(
     timeout: int,
     max_frames: int | None,
     sample_rate: int,
+    show_details: bool,
 ) -> list[dict[str, Any]]:
     """Run enrichment on all shots for a single model, return per-shot results."""
     enrich_fn = make_ollama_enrich_fn(
@@ -81,6 +82,10 @@ def run_enrichment_for_model(
             fields = parse_llm_response(raw_response)
 
             has_error = "AI Error" in fields
+            details: dict[str, Any] = {
+                airtable_col: fields.get(airtable_col)
+                for airtable_col in SHOT_ENRICHMENT_FIELDS.values()
+            }
             covered_fields = [
                 col for col in SHOT_ENRICHMENT_FIELDS.values()
                 if col in fields and fields[col]
@@ -93,10 +98,16 @@ def run_enrichment_for_model(
                 "ai_error": fields.get("AI Error"),
                 "field_count": len(covered_fields),
                 "covered_fields": covered_fields,
+                "details": details if not has_error else None,
                 "raw_response": raw_response[:500] if has_error else None,
             })
             status = f" {'OK' if not has_error else 'PARSE_FAIL'} ({elapsed:.1f}s, {len(covered_fields)} fields)"
             print(status)
+
+            if show_details and not has_error:
+                print(f"    Details ({shot_label}):")
+                for k, v in details.items():
+                    print(f"      - {k}: {v}")
 
         except Exception as e:
             elapsed = time.monotonic() - t0
@@ -107,6 +118,7 @@ def run_enrichment_for_model(
                 "ai_error": str(e),
                 "field_count": 0,
                 "covered_fields": [],
+                "details": None,
                 "raw_response": None,
             })
             print(f" ERROR ({elapsed:.1f}s): {e}")
@@ -227,6 +239,10 @@ def main() -> None:
         "--output-json", default=None,
         help="Optional: write raw results to JSON file"
     )
+    parser.add_argument(
+        "--show-details", action="store_true",
+        help="Print per-shot enrichment field values to stdout"
+    )
 
     args = parser.parse_args()
 
@@ -256,6 +272,7 @@ def main() -> None:
             timeout=args.timeout,
             max_frames=args.max_frames,
             sample_rate=args.sample_rate,
+            show_details=args.show_details,
         )
         model_results[model] = results
         print()

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-AI_PROMPT_VERSION: str = "1.1"
+AI_PROMPT_VERSION: str = "1.2"
 """Tracks the prompt template revision for AI Model / AI Prompt Version fields."""
 
 SHOT_ENRICHMENT_FIELDS: dict[str, str] = {

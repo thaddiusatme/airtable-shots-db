@@ -413,3 +413,107 @@ class TestPreflightModelCheck:
             model="nonexistent-model",
         )
         assert callable(fn)
+
+
+# ---------------------------------------------------------------------------
+# TestStructuredOutputPayload — Ollama structured output (format + temperature)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredOutputPayload:
+    """Tests for Ollama structured JSON output via the ``format`` parameter.
+
+    Issue #38 P0-A: The Ollama request payload must include a ``format`` key
+    with a JSON schema describing the 13 enrichment fields, and ``temperature``
+    set to 0 for deterministic output. This prevents non-JSON prose responses.
+    """
+
+    @pytest.fixture
+    def capture_dir_with_frames(self, tmp_path: Path) -> Path:
+        for name in SAMPLE_PROMPT["frame_references"]:
+            (tmp_path / name).write_bytes(b"\x89PNG_FAKE_IMAGE_DATA")
+        return tmp_path
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_includes_format_key(self, mock_post, capture_dir_with_frames):
+        """Ollama payload must include a 'format' key for structured output."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        assert "format" in payload, "Payload missing 'format' key for structured output"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_is_json_schema_object(self, mock_post, capture_dir_with_frames):
+        """The 'format' value must be a dict representing a JSON schema."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        fmt = payload["format"]
+        assert isinstance(fmt, dict), f"Expected dict, got {type(fmt)}"
+        assert fmt.get("type") == "object", "Schema root must be type=object"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_contains_all_enrichment_keys(self, mock_post, capture_dir_with_frames):
+        """The JSON schema properties must include all 13 SHOT_ENRICHMENT_FIELDS keys."""
+        from publisher.shot_package import SHOT_ENRICHMENT_FIELDS
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        schema_props = payload["format"].get("properties", {})
+        for key in SHOT_ENRICHMENT_FIELDS.keys():
+            assert key in schema_props, f"Schema missing enrichment key: {key}"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_required_lists_all_keys(self, mock_post, capture_dir_with_frames):
+        """The JSON schema 'required' array must list all enrichment keys."""
+        from publisher.shot_package import SHOT_ENRICHMENT_FIELDS
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        required = set(payload["format"].get("required", []))
+        expected = set(SHOT_ENRICHMENT_FIELDS.keys())
+        assert required == expected, f"Required mismatch: {required.symmetric_difference(expected)}"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_sets_temperature_zero(self, mock_post, capture_dir_with_frames):
+        """Payload must include temperature=0 for deterministic output."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        assert "options" in payload, "Payload missing 'options' key"
+        assert payload["options"].get("temperature") == 0, "temperature must be 0"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_movement_is_array_type(self, mock_post, capture_dir_with_frames):
+        """The 'movement' field in the schema should be typed as array (multi-select)."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        movement_prop = payload["format"]["properties"]["movement"]
+        assert movement_prop.get("type") == "array", "movement should be array type"

@@ -117,6 +117,8 @@ def make_ollama_enrich_fn(
             "prompt": prompt_text,
             "images": images,
             "stream": False,
+            "format": _build_enrichment_json_schema(),
+            "options": {"temperature": 0},
         }
 
         try:
@@ -141,6 +143,30 @@ def make_ollama_enrich_fn(
         return data.get("response", "")
 
     return _enrich
+
+
+def _build_enrichment_json_schema() -> dict[str, Any]:
+    """Build a JSON schema for Ollama structured output.
+
+    Returns a JSON Schema object whose properties match the 13
+    ``SHOT_ENRICHMENT_FIELDS`` keys. All fields are required. The
+    ``movement`` field is typed as ``array`` (multi-select); all others
+    are ``string``.
+    """
+    from publisher.shot_package import SHOT_ENRICHMENT_FIELDS
+
+    properties: dict[str, Any] = {}
+    for key in SHOT_ENRICHMENT_FIELDS:
+        if key == "movement":
+            properties[key] = {"type": "array", "items": {"type": "string"}}
+        else:
+            properties[key] = {"type": "string"}
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(SHOT_ENRICHMENT_FIELDS.keys()),
+    }
 
 
 def _encode_frames(

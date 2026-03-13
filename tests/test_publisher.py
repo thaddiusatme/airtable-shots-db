@@ -2185,3 +2185,187 @@ class TestIsAlreadyEnriched:
     def test_not_enriched_with_none_prompt_version(self):
         """None AI Prompt Version is falsy — not enriched."""
         assert is_shot_enriched({"AI Prompt Version": None}) is False
+
+
+# ---------------------------------------------------------------------------
+# Enrichment success criteria tests (Issue #38 P0-B)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentSuccessCriteria:
+    """Tests for correct enrichment bookkeeping: AI Prompt Version must
+    only be set when parse_llm_response succeeds (no AI Error).
+
+    Issue #38 P0-B: The audit of U_cDKkDvPAQ found shots with BOTH
+    AI Error and AI Prompt Version, meaning parse failures were being
+    marked as "enriched" and preventing retry.
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    INVALID_LLM_RESPONSE = "Here is my analysis of the shot:\nThe scene shows a speaker..."
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos and Shots tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_set_ai_prompt_version(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """When LLM returns non-JSON prose, AI Prompt Version must NOT be written."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        for call in mock_shots.update.call_args_list:
+            _, fields = call[0]
+            if "AI Error" in fields:
+                assert "AI Prompt Version" not in fields, (
+                    "AI Prompt Version must not be set when AI Error is present"
+                )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_set_ai_updated_at(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """When LLM returns non-JSON, AI Updated At must NOT be written."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        for call in mock_shots.update.call_args_list:
+            _, fields = call[0]
+            if "AI Error" in fields:
+                assert "AI Updated At" not in fields, (
+                    "AI Updated At must not be set when AI Error is present"
+                )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_count_as_enriched(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Parse failures must not increment shots_enriched count."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert result["shots_enriched"] == 0, (
+            "Parse failures should not be counted as enriched"
+        )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_writes_ai_error(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Parse failure should still write AI Error to the shot record."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Error" in fields
+
+    @patch("publisher.publish.Api")
+    def test_successful_parse_still_sets_ai_prompt_version(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Valid JSON parse should still set AI Prompt Version (regression guard)."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Prompt Version" in fields
+        assert "AI Error" not in fields
+
+    @patch("publisher.publish.Api")
+    def test_mixed_success_and_failure_bookkeeping(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """With mixed results, only successful parses get AI Prompt Version."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            self.INVALID_LLM_RESPONSE,
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert result["shots_enriched"] == 2
+
+        updates = mock_shots.update.call_args_list
+        # Shot 1: success
+        _, fields1 = updates[0][0]
+        assert "AI Prompt Version" in fields1
+        assert "AI Error" not in fields1
+        # Shot 2: parse failure
+        _, fields2 = updates[1][0]
+        assert "AI Error" in fields2
+        assert "AI Prompt Version" not in fields2
+        # Shot 3: success
+        _, fields3 = updates[2][0]
+        assert "AI Prompt Version" in fields3
+        assert "AI Error" not in fields3

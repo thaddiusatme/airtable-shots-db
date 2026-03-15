@@ -64,6 +64,29 @@ REFERENCE_FRAMES = [
     {"url": "https://r2.example.com/captures/vid123/frame_00005.png", "role": "composition"},
 ]
 
+# Fixture from real Airtable data — controlled-vocab leak into narrative field
+NARRATIVE_CONTROLLED_LEAK_SHOT = {
+    "Shot Label": "S03",
+    "Subject": "The speaker and the computer screen.",
+    "Setting": "A computer screen displaying a Google Docs document.",
+    "Shot Type": "Medium",
+    "Camera Angle": "Eye-level",
+    "Lighting": "Other",
+    "How It Is Shot": "Other",
+    "Frame Progression": "Yes",
+    "Production Patterns": "Static",
+    "Recreation Guidance": "Screen-capture the computer display",
+}
+
+# Fixture with empty required fields
+EMPTY_REQUIRED_SHOT = {
+    "Shot Label": "S16",
+    "Subject": "",
+    "Setting": "",
+    "Shot Type": "Medium",
+    "Camera Angle": "Eye-level",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: Clean shot — all fields present, no Other values
@@ -277,3 +300,87 @@ class TestDeterministicOutput:
         r1 = assemble_shot_image_prompt(OTHER_HEAVY_SHOT)
         r2 = assemble_shot_image_prompt(OTHER_HEAVY_SHOT)
         assert json.dumps(r1, sort_keys=True) == json.dumps(r2, sort_keys=True)
+
+
+# ---------------------------------------------------------------------------
+# Test: Short uninformative narrative values (discovered from live data)
+# ---------------------------------------------------------------------------
+
+
+class TestShortUninformativeNarratives:
+    """Narrative fields with controlled-vocab leaks or single-word non-content.
+
+    Real data showed How It Is Shot = "Other", Frame Progression = "Yes",
+    Production Patterns = "Static" — these add noise, not signal.
+    """
+
+    def test_how_it_is_shot_other_filtered(self):
+        """'Other' in a narrative field is a controlled-vocab leak, not content."""
+        result = assemble_shot_image_prompt(NARRATIVE_CONTROLLED_LEAK_SHOT)
+        sections = result["prompt_sections"]
+        # "Other" should not appear as composition content
+        assert "composition" not in sections or sections["composition"].lower() != "other"
+        # Should be tracked as omission
+        assert any("How It Is Shot" in o for o in result["metadata"]["omissions"])
+
+    def test_frame_progression_yes_filtered(self):
+        """Single-word 'Yes' is not useful prompt content."""
+        result = assemble_shot_image_prompt(NARRATIVE_CONTROLLED_LEAK_SHOT)
+        sections = result["prompt_sections"]
+        # "Yes" should not appear in context section
+        context = sections.get("context", "")
+        assert context.strip().lower() != "yes"
+        assert any("Frame Progression" in o for o in result["metadata"]["omissions"])
+
+    def test_production_patterns_static_filtered(self):
+        """Single-word 'Static' in Production Patterns is not useful style info."""
+        result = assemble_shot_image_prompt(NARRATIVE_CONTROLLED_LEAK_SHOT)
+        sections = result["prompt_sections"]
+        # "Static" alone should not appear as style content
+        assert "style" not in sections or sections["style"].lower() != "static"
+        assert any("Production Patterns" in o for o in result["metadata"]["omissions"])
+
+    def test_real_recreation_guidance_passes_through(self):
+        """Non-short, non-uninformative values should still pass through."""
+        result = assemble_shot_image_prompt(NARRATIVE_CONTROLLED_LEAK_SHOT)
+        sections = result["prompt_sections"]
+        # Recreation Guidance has real content, should appear in context
+        context = sections.get("context", "")
+        assert "screen-capture" in context.lower() or "computer display" in context.lower()
+
+    def test_positive_prompt_excludes_other_and_yes(self):
+        """Positive prompt should not contain bare 'Other' or 'Yes' tokens."""
+        result = assemble_shot_image_prompt(NARRATIVE_CONTROLLED_LEAK_SHOT)
+        pp = result["positive_prompt"]
+        # Split into comma-separated parts and check none is just "Other" or "Yes"
+        parts = [p.strip().lower() for p in pp.split(",")]
+        assert "other" not in parts, f"Bare 'Other' found in prompt parts: {parts}"
+        assert "yes" not in parts, f"Bare 'Yes' found in prompt parts: {parts}"
+
+
+# ---------------------------------------------------------------------------
+# Test: Empty required fields excluded from prompt_sections
+# ---------------------------------------------------------------------------
+
+
+class TestEmptySectionsCleanup:
+    """Empty subject/setting should not appear in prompt_sections dict."""
+
+    def test_empty_subject_excluded_from_sections(self):
+        result = assemble_shot_image_prompt(EMPTY_REQUIRED_SHOT)
+        sections = result["prompt_sections"]
+        if "subject" in sections:
+            assert sections["subject"] != "", "Empty subject should be excluded from sections"
+
+    def test_empty_setting_excluded_from_sections(self):
+        result = assemble_shot_image_prompt(EMPTY_REQUIRED_SHOT)
+        sections = result["prompt_sections"]
+        if "setting" in sections:
+            assert sections["setting"] != "", "Empty setting should be excluded from sections"
+
+    def test_positive_prompt_still_works_without_subject_setting(self):
+        result = assemble_shot_image_prompt(EMPTY_REQUIRED_SHOT)
+        pp = result["positive_prompt"]
+        # Should have camera info at minimum, no leading commas
+        assert not pp.startswith(",")
+        assert "medium shot" in pp.lower()

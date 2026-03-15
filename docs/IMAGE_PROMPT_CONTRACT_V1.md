@@ -1,8 +1,8 @@
 # Image Prompt Contract v1 — SDXL/ComfyUI Per-Shot Prompt Assembler
 
-**Status:** v1.0 (GH-32)  
+**Status:** v1.1 (GH-32)  
 **Module:** `publisher/prompt_assembler.py`  
-**Assembler version:** `1.0`
+**Assembler version:** `1.1`
 
 ---
 
@@ -30,12 +30,12 @@ Transforms enriched shot data (Airtable field names from the LLM enrichment pipe
 | `Camera Angle`        | string      | `camera`          | Omit if "Other" or missing |
 | `Lighting`            | string      | `lighting`        | Omit if "Other" or missing |
 | `Movement`            | list[str]   | (not used in v1)  | — |
-| `How It Is Shot`      | string      | `composition`     | Filter boilerplate |
+| `How It Is Shot`      | string      | `composition`     | Filter boilerplate + uninformative |
 | `Shot Function`       | string      | (not used in v1)  | — |
 | `On-screen Text`      | string      | `constraints`     | Omit if empty |
-| `Frame Progression`   | string      | `context`         | Filter boilerplate |
-| `Production Patterns` | string      | `style`           | Filter boilerplate |
-| `Recreation Guidance` | string      | `context`         | Filter boilerplate |
+| `Frame Progression`   | string      | `context`         | Filter boilerplate + uninformative |
+| `Production Patterns` | string      | `style`           | Filter boilerplate + uninformative |
+| `Recreation Guidance` | string      | `context`         | Filter boilerplate + uninformative |
 
 ### Reference frames (optional parameter)
 
@@ -54,8 +54,8 @@ reference_frames: list[dict] | None
     "positive_prompt": str,       # Comma-separated prompt string
     "negative_prompt": str,       # Baseline negative prompt
     "prompt_sections": {          # Structured breakdown
-        "subject": str,           # Always present
-        "setting": str,           # Always present
+        "subject": str,           # Present if non-empty
+        "setting": str,           # Present if non-empty
         "composition": str,       # From How It Is Shot (if non-boilerplate)
         "camera": str,            # Shot Type + Camera Angle (if not Other)
         "lighting": str,          # Lighting value (if not Other)
@@ -68,13 +68,13 @@ reference_frames: list[dict] | None
     ],
     "metadata": {
         "shot_label": str,
-        "assembler_version": str, # Currently "1.0"
+        "assembler_version": str, # Currently "1.1"
         "omissions": [str],       # Human-readable list of what was dropped
     }
 }
 ```
 
-**Note:** `prompt_sections` only includes keys with non-empty values. `subject` and `setting` are always present (may be empty string if input is missing).
+**Note:** `prompt_sections` only includes keys with non-empty values. As of v1.1, `subject` and `setting` are excluded when empty (unenriched shots).
 
 ---
 
@@ -100,6 +100,21 @@ Known boilerplate phrases are detected and filtered:
 Tracked in `metadata.omissions` as:
 - `"Frame Progression: boilerplate filtered"`
 - `"Production Patterns: boilerplate filtered"`
+
+### Short uninformative narratives (v1.1)
+
+Single-word values that are controlled-vocab leaks or non-informative placeholders are filtered from narrative fields. Discovered via live validation against real Airtable data.
+
+Filtered values: `other`, `yes`, `no`, `n/a`, `na`, `none`, `static`, `unknown`
+
+Examples from real data:
+- `How It Is Shot: "Other"` — controlled-vocab leak, not a composition description
+- `Frame Progression: "Yes"` — uninformative single-word response
+- `Production Patterns: "Static"` — not a useful style descriptor
+
+Tracked in `metadata.omissions` as:
+- `"How It Is Shot: uninformative value 'Other' filtered"`
+- `"Frame Progression: uninformative value 'Yes' filtered"`
 
 ### Empty/missing fields
 
@@ -173,7 +188,7 @@ shot_fields = {
     "reference_images": [],
     "metadata": {
         "shot_label": "S03",
-        "assembler_version": "1.0",
+        "assembler_version": "1.1",
         "omissions": []
     }
 }
@@ -212,7 +227,7 @@ shot_fields = {
     "reference_images": [],
     "metadata": {
         "shot_label": "S07",
-        "assembler_version": "1.0",
+        "assembler_version": "1.1",
         "omissions": [
             "Camera Angle: Other (low-signal, omitted)",
             "Lighting: Other (low-signal, omitted)",
@@ -231,7 +246,7 @@ shot_fields = {
 
 2. **Character reference roles**: The `reference_images` schema supports `role` values beyond `"composition"` (e.g., `"character"`, `"style"`). Role-specific handling deferred to v2.
 
-3. **Negative prompt from shot context**: Shot-derived exclusions (indoor/outdoor inversion, specific artifacts) need more data to validate. Marked TBD.
+3. **Negative prompt from shot context**: Shot-derived exclusions (indoor/outdoor inversion, specific artifacts) were evaluated during v1.1 live validation. Finding: enrichment data is not reliable enough for automated negative prompt derivation — Setting values like "Digital interface" or "Computer screen" don't map cleanly to exclusion terms. **Deferred to v2** pending higher-quality enrichment or manual negative prompt curation.
 
 4. **Movement field usage**: Camera movement info (Static, Pan, etc.) is not used in v1 image prompts. May be relevant for video generation prompts (P2-C).
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-ASSEMBLER_VERSION: str = "1.0"
+ASSEMBLER_VERSION: str = "1.1"
 """Tracks the prompt assembler revision for metadata."""
 
 # ---------------------------------------------------------------------------
@@ -31,6 +31,15 @@ _BOILERPLATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"cannot be determined", re.IGNORECASE),
     re.compile(r"insufficient (?:data|information)", re.IGNORECASE),
 )
+
+_UNINFORMATIVE_NARRATIVES: frozenset[str] = frozenset({
+    "other", "yes", "no", "n/a", "na", "none", "static", "unknown",
+})
+"""Short single-word values that add noise, not signal, to SDXL prompts.
+
+These are typically controlled-vocab leaks into narrative fields
+(e.g., How It Is Shot = "Other") or uninformative placeholders.
+"""
 
 _BASELINE_NEGATIVE_PROMPT: str = (
     "blurry, deformed, low quality, watermark, text overlay, "
@@ -61,10 +70,14 @@ def _filter_narrative(value: str | None, field_name: str, omissions: list[str]) 
     """Return the narrative text if non-boilerplate, else empty string + track omission."""
     if not value or not value.strip():
         return ""
-    if _is_boilerplate(value):
+    stripped = value.strip()
+    if _is_boilerplate(stripped):
         omissions.append(f"{field_name}: boilerplate filtered")
         return ""
-    return value.strip()
+    if stripped.lower() in _UNINFORMATIVE_NARRATIVES:
+        omissions.append(f"{field_name}: uninformative value '{stripped}' filtered")
+        return ""
+    return stripped
 
 
 def _build_positive_prompt(sections: dict[str, str]) -> str:
@@ -129,11 +142,15 @@ def assemble_shot_image_prompt(
     omissions: list[str] = []
     sections: dict[str, str] = {}
 
-    # -- Subject (required) --
-    sections["subject"] = shot_fields.get("Subject", "").strip()
+    # -- Subject (required, but may be empty for unenriched shots) --
+    subject = shot_fields.get("Subject", "").strip()
+    if subject:
+        sections["subject"] = subject
 
-    # -- Setting (required) --
-    sections["setting"] = shot_fields.get("Setting", "").strip()
+    # -- Setting (required, but may be empty for unenriched shots) --
+    setting = shot_fields.get("Setting", "").strip()
+    if setting:
+        sections["setting"] = setting
 
     # -- Composition (from How It Is Shot) --
     how_shot = _filter_narrative(

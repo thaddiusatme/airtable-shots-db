@@ -176,4 +176,76 @@ describe('POST /pipeline/resume/:runId', () => {
     // Status should be reset (queued or running)
     assert.notEqual(job.status, 'error');
   });
+
+  it('stores enrichShots and enrichModel on newly created jobs from /pipeline/run', async () => {
+    const res = await request('POST', '/pipeline/run', {
+      videoUrl: 'https://www.youtube.com/watch?v=abc123',
+      videoId: 'abc123',
+      videoTitle: 'Test Video',
+      transcript: 'test',
+      transcriptSegments: [],
+      capture: { interval: 5, maxFrames: 100 },
+      skipVlm: true,
+      enrichShots: true,
+      enrichModel: 'qwen2.5-vl:latest',
+      forceReenrich: true,
+    });
+
+    assert.equal(res.status, 200);
+    const job = jobs.get(res.body.runId);
+    assert.equal(job.input.enrichShots, true);
+    assert.equal(job.input.enrichModel, 'qwen2.5-vl:latest');
+    assert.equal(job.input.forceReenrich, true);
+  });
+
+  it('gates forceReenrich off when enrichShots is disabled on /pipeline/run', async () => {
+    const res = await request('POST', '/pipeline/run', {
+      videoUrl: 'https://www.youtube.com/watch?v=abc123',
+      videoId: 'abc123',
+      videoTitle: 'Test Video',
+      transcript: 'test',
+      transcriptSegments: [],
+      capture: { interval: 5, maxFrames: 100 },
+      skipVlm: true,
+      enrichShots: false,
+      enrichModel: 'qwen2.5-vl:latest',
+      forceReenrich: true,
+    });
+
+    assert.equal(res.status, 200);
+    const job = jobs.get(res.body.runId);
+    assert.equal(job.input.enrichShots, false);
+    assert.equal(job.input.enrichModel, 'qwen2.5-vl:latest');
+    assert.equal(job.input.forceReenrich, false);
+  });
+
+  it('applies gated enrichment overrides when resuming an existing failed job', async () => {
+    seedJob({
+      runId: 'resume-enrich',
+      status: 'error',
+      input: {
+        videoUrl: 'https://youtube.com/watch?v=abc123',
+        videoId: 'abc123',
+        videoTitle: 'Test Video',
+        transcript: 'test',
+        transcriptSegments: [],
+        capture: { interval: 5, maxFrames: 100 },
+        skipVlm: false,
+        enrichShots: false,
+        forceReenrich: false,
+      },
+    });
+
+    const res = await request('POST', '/pipeline/resume/resume-enrich', {
+      enrichShots: true,
+      enrichModel: 'qwen2.5-vl:latest',
+      forceReenrich: true,
+    });
+
+    assert.equal(res.status, 200);
+    const job = jobs.get('resume-enrich');
+    assert.equal(job.input.enrichShots, true);
+    assert.equal(job.input.enrichModel, 'qwen2.5-vl:latest');
+    assert.equal(job.input.forceReenrich, true);
+  });
 });

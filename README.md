@@ -2,9 +2,9 @@
 
 Automated pipeline for extracting, analyzing, and publishing YouTube video shot lists to Airtable with AI-generated descriptions, frame thumbnails, and per-second frame timeline records.
 
-**Status:** Frames Feature Complete | Shot-Level LLM Enrichment Complete | Pipeline Resumption Complete  
-**Tests:** 261 validated in-scope passing (148 enrichment-related)  
-**Current Focus:** Live validation of the completed enrichment pipeline, then Chrome extension integration
+**Status:** Frames Feature Complete | Shot-Level LLM Enrichment Complete | Structured Outputs (GH-38) Complete | Pipeline Resumption Complete  
+**Tests:** 232 validated in-scope passing (12 new for structured outputs + success criteria)  
+**Current Focus:** Production enrichment runs with 100% valid JSON, model quality optimization
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ export $(cat .env | xargs)
   --max-concurrent-uploads 8 \
   --verbose
 
-# 5. Optional: publish with shot enrichment
+# 5. Optional: publish with shot enrichment (structured outputs enabled)
 .venv/bin/python -m publisher \
   --capture-dir captures/VIDEO_ID_*/ \
   --api-key "$AIRTABLE_API_KEY" \
@@ -40,6 +40,13 @@ export $(cat .env | xargs)
   --enrich-shots \
   --enrich-model llava:latest \
   --verbose
+
+# 6. A/B test model comparison
+python scripts/ab_enrichment_test.py \
+  --capture-dir captures/VIDEO_ID_*/ \
+  --models llava:latest qwen2.5vl:7b \
+  --max-frames 4 \
+  --show-details
 ```
 
 ## Pipeline Overview
@@ -176,13 +183,13 @@ cd pipeline-server && npm test
 .venv/bin/python -m pytest tests/ --cov=publisher --cov=analyzer --cov=segmenter
 ```
 
-**Test Coverage:** 261 validated in-scope tests passing
+**Test Coverage:** 232 validated in-scope tests passing (12 new for Issue #38)
 
 | Module | Count |
 |--------|-------|
-| Publisher (core + frames + enrichment) | 109 |
+| Publisher (core + frames + enrichment) | 115 (+6 success criteria) |
 | Publisher (CLI) | 22 |
-| Publisher (LLM enricher) | 27 |
+| Publisher (LLM enricher) | 33 (+6 structured output) |
 | Publisher (shot package) | 62 |
 | Publisher (R2 uploader) | 23 |
 | Publisher (frame helpers) | 12 |
@@ -193,6 +200,7 @@ cd pipeline-server && npm test
 | Segmenter (scene merger) | 8 + 8 |
 | Pipeline State (Node) | 15 |
 | Resume API (Node) | 9 |
+| **Total** | **232** |
 
 ## Project Structure
 
@@ -229,6 +237,7 @@ airtable-shots-db/
 
 - **[CURRENT_STATE.md](./CURRENT_STATE.md)** — Full project status, schema, test coverage, roadmap
 - **[NEXT_SESSION.md](./NEXT_SESSION.md)** — Current handoff and next-phase priorities
+- **[docs/LESSONS_LEARNED_ISSUE_38_STRUCTURED_OUTPUTS.md](./docs/LESSONS_LEARNED_ISSUE_38_STRUCTURED_OUTPUTS.md)** — Structured outputs + success criteria fix (GH #38)
 - **[docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md](./docs/GITHUB_ISSUE_SHOT_ENRICHMENT.md)** — End-to-end enrichment implementation history
 - **[docs/GITHUB_ISSUE_FRAMES_TABLE_SCHEMA.md](./docs/GITHUB_ISSUE_FRAMES_TABLE_SCHEMA.md)** — Frames table schema spec (GH #18)
 - **[docs/GITHUB_ISSUE_FRAMES_CHROME_EXTENSION.md](./docs/GITHUB_ISSUE_FRAMES_CHROME_EXTENSION.md)** — Chrome extension integration (GH #19)
@@ -267,6 +276,7 @@ airtable-shots-db/
 |---|-------|----------|
 | [#18](https://github.com/thaddiusatme/airtable-shots-db/issues/18) | Create Frames Table Schema in Airtable | **P0 — Blocks Frames feature** |
 | [#19](https://github.com/thaddiusatme/airtable-shots-db/issues/19) | Integrate Frames into Chrome Extension Pipeline | P1 — Blocked by #18 |
+| [#38](https://github.com/thaddiusatme/airtable-shots-db/issues/38) | Enrichment reliability: structured outputs + success criteria | ✅ Complete (100% valid JSON) |
 | [#17](https://github.com/thaddiusatme/airtable-shots-db/issues/17) | Feature: Publish 1fps Frames to Airtable | ✅ Code complete |
 | [#16](https://github.com/thaddiusatme/airtable-shots-db/issues/16) | Implement Pipeline Resumption | ✅ Complete |
 | [#12](https://github.com/thaddiusatme/airtable-shots-db/issues/12) | Simplify end-to-end CLI | Future |

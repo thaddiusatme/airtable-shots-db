@@ -594,21 +594,33 @@ def publish_to_airtable(
                     raw_response = enrich_fn(prompt)
                     elapsed = time.monotonic() - shot_start
                     fields = parse_llm_response(raw_response)
-                    fields["AI Prompt Version"] = AI_PROMPT_VERSION
-                    fields["AI Updated At"] = (
-                        datetime.now(timezone.utc).isoformat()
-                    )
-                    if enrich_model:
-                        fields["AI Model"] = enrich_model
-                    shots_table.update(shot_record["id"], fields)
-                    shots_enriched_count += 1
-                    logger.info(
-                        "Enriched %s (%d/%d) in %.1fs",
-                        shot_label,
-                        i + 1,
-                        total_shots,
-                        elapsed,
-                    )
+
+                    if "AI Error" in fields:
+                        shots_table.update(shot_record["id"], fields)
+                        logger.warning(
+                            "Parse failed for %s (%d/%d) in %.1fs: %s",
+                            shot_label,
+                            i + 1,
+                            total_shots,
+                            elapsed,
+                            fields["AI Error"],
+                        )
+                    else:
+                        fields["AI Prompt Version"] = AI_PROMPT_VERSION
+                        fields["AI Updated At"] = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                        if enrich_model:
+                            fields["AI Model"] = enrich_model
+                        shots_table.update(shot_record["id"], fields)
+                        shots_enriched_count += 1
+                        logger.info(
+                            "Enriched %s (%d/%d) in %.1fs",
+                            shot_label,
+                            i + 1,
+                            total_shots,
+                            elapsed,
+                        )
                 except Exception as e:
                     elapsed = time.monotonic() - shot_start
                     logger.warning(

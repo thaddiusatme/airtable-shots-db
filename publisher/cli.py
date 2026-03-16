@@ -141,6 +141,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Ollama HTTP request timeout in seconds (default: 600).",
     )
     parser.add_argument(
+        "--gemini-api-key",
+        default=os.environ.get("GEMINI_API_KEY", ""),
+        help="Gemini API key (or set GEMINI_API_KEY env var).",
+    )
+    parser.add_argument(
+        "--gemini-api-url",
+        default="https://generativelanguage.googleapis.com/v1beta",
+        help="Gemini API base URL (default: https://generativelanguage.googleapis.com/v1beta).",
+    )
+    parser.add_argument(
         "--max-enrich-frames",
         type=int,
         default=None,
@@ -199,6 +209,27 @@ def main(argv: list[str] | None = None) -> int:
                 args.enrich_provider,
                 args.enrich_model,
                 args.ollama_url,
+            )
+        elif args.enrich_provider == "gemini":
+            from publisher.llm_enricher import make_gemini_enrich_fn
+
+            try:
+                enrich_fn = make_gemini_enrich_fn(
+                    capture_dir=args.capture_dir,
+                    api_key=args.gemini_api_key,
+                    model=args.enrich_model,
+                    timeout=args.ollama_timeout,
+                    max_frames=args.max_enrich_frames,
+                    api_url=args.gemini_api_url,
+                )
+            except RuntimeError as e:
+                logger.error("Gemini configuration failed: %s", e)
+                return 1
+            logger.info(
+                "Enrichment enabled (provider=%s, model=%s, url=%s)",
+                args.enrich_provider,
+                args.enrich_model,
+                args.gemini_api_url,
             )
         else:
             logger.error("Unsupported enrichment provider: %s", args.enrich_provider)

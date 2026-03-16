@@ -508,3 +508,40 @@ class TestCLIEnrichmentFlags:
             "--max-enrich-frames", "4",
         ])
         assert rc == 0
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_gemini_provider_builds_enrich_fn(self, mock_publish, analysis_dir: Path):
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-provider", "gemini",
+            "--enrich-model", "gemini-2.0-flash",
+            "--gemini-api-key", "gemini-key",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_model"] == "gemini-2.0-flash"
+        assert callable(call_kwargs["enrich_fn"])
+
+    def test_gemini_provider_requires_api_key(self, analysis_dir: Path):
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-provider", "gemini",
+            "--enrich-model", "gemini-2.0-flash",
+        ])
+        assert rc == 1

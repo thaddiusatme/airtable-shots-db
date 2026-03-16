@@ -23,12 +23,21 @@ const settingsLink = document.getElementById('settingsLink');
 const runPipelineBtn = document.getElementById('runPipelineBtn');
 const pipelineIntervalInput = document.getElementById('pipelineInterval');
 const pipelineMaxFramesInput = document.getElementById('pipelineMaxFrames');
+const enrichShotsCheckbox = document.getElementById('enrichShotsCheckbox');
+const enrichProviderSelect = document.getElementById('enrichProviderSelect');
+const enrichModelInput = document.getElementById('enrichModelInput');
+const forceReenrichCheckbox = document.getElementById('forceReenrichCheckbox');
 const pipelineStatusDiv = document.getElementById('pipelineStatus');
 const pipelineStepSpan = document.getElementById('pipelineStep');
 const serverOfflineDiv = document.getElementById('serverOffline');
 const resumeSection = document.getElementById('resumeSection');
 const resumePipelineBtn = document.getElementById('resumePipelineBtn');
 const resumeInfo = document.getElementById('resumeInfo');
+
+const DEFAULT_ENRICHMENT_MODELS = {
+  ollama: 'qwen2.5-vl:latest',
+  gemini: 'gemini-2.5-flash',
+};
 
 // DOM elements — Capture (Legacy)
 const captureIntervalInput = document.getElementById('captureInterval');
@@ -333,6 +342,27 @@ async function checkServerHealth() {
   return false;
 }
 
+function getSelectedEnrichmentProvider() {
+  return enrichProviderSelect.value || 'ollama';
+}
+
+function getDefaultModelForProvider(provider) {
+  return DEFAULT_ENRICHMENT_MODELS[provider] || DEFAULT_ENRICHMENT_MODELS.ollama;
+}
+
+function getSelectedEnrichmentModel() {
+  const provider = getSelectedEnrichmentProvider();
+  return (enrichModelInput.value || '').trim() || getDefaultModelForProvider(provider);
+}
+
+function syncModelInputForProvider() {
+  const provider = getSelectedEnrichmentProvider();
+  enrichModelInput.placeholder = getDefaultModelForProvider(provider);
+  if (!(enrichModelInput.value || '').trim()) {
+    enrichModelInput.value = getDefaultModelForProvider(provider);
+  }
+}
+
 async function runFullPipeline() {
   runPipelineBtn.disabled = true;
   runPipelineBtn.textContent = 'Running...';
@@ -383,6 +413,10 @@ async function runFullPipeline() {
     const interval = parseFloat(pipelineIntervalInput.value) || 5;
     const maxFrames = parseInt(pipelineMaxFramesInput.value) || 100;
     const skipVlm = document.getElementById('skipVlmCheckbox').checked;
+    const enrichShots = enrichShotsCheckbox.checked;
+    const enrichProvider = getSelectedEnrichmentProvider();
+    const enrichModel = getSelectedEnrichmentModel();
+    const forceReenrich = enrichShots && forceReenrichCheckbox.checked;
 
     const res = await fetch(`${PIPELINE_SERVER}/pipeline/run`, {
       method: 'POST',
@@ -395,6 +429,10 @@ async function runFullPipeline() {
         transcriptSegments: transcriptData.transcriptSegments,
         capture: { interval, maxFrames },
         skipVlm,
+        enrichShots,
+        enrichProvider,
+        enrichModel,
+        forceReenrich,
       }),
     });
 
@@ -505,6 +543,12 @@ async function resumePipeline() {
     const res = await fetch(`${PIPELINE_SERVER}/pipeline/resume/${resumableJob.runId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrichShots: enrichShotsCheckbox.checked,
+        enrichProvider: getSelectedEnrichmentProvider(),
+        enrichModel: getSelectedEnrichmentModel(),
+        forceReenrich: enrichShotsCheckbox.checked && forceReenrichCheckbox.checked,
+      }),
     });
 
     if (!res.ok) {
@@ -640,6 +684,7 @@ runPipelineBtn.addEventListener('click', runFullPipeline);
 resumePipelineBtn.addEventListener('click', resumePipeline);
 startCaptureBtn.addEventListener('click', startCapture);
 stopCaptureBtn.addEventListener('click', stopCapture);
+enrichProviderSelect.addEventListener('change', syncModelInputForProvider);
 openFolderAnchor.addEventListener('click', (e) => {
   e.preventDefault();
   // Open the Downloads folder — chrome.downloads.showDefaultFolder() opens the default download location
@@ -648,6 +693,7 @@ openFolderAnchor.addEventListener('click', (e) => {
 
 // Initialize - check if on YouTube video page
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  syncModelInputForProvider();
   const currentTab = tabs[0];
   if (!currentTab.url?.includes('youtube.com/watch')) {
     showStatus('Navigate to a YouTube video page to extract transcripts', 'info');

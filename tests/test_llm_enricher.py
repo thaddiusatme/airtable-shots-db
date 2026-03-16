@@ -1,13 +1,16 @@
-"""Tests for publisher.llm_enricher — Ollama LLM adapter."""
+"""Tests for publisher.llm_enricher — Ollama and Gemini LLM adapters."""
 
 import base64
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from publisher.llm_enricher import make_ollama_enrich_fn, verify_ollama_model
+from publisher.llm_enricher import (
+    make_gemini_enrich_fn,
+    make_ollama_enrich_fn,
+    verify_ollama_model,
+)
 
 
 SAMPLE_PROMPT = {
@@ -15,6 +18,22 @@ SAMPLE_PROMPT = {
     "user_prompt": "Shot: S01\nVideo ID: abc123\nTime range: 0s – 20s\nFrames provided: 2",
     "frame_references": ["frame_00000_t000.000s.png", "frame_00005_t005.000s.png"],
     "prompt_version": "1.0",
+}
+
+EXPECTED_ENRICHMENT_KEYS = {
+    "scene_summary",
+    "how_it_is_shot",
+    "shot_type",
+    "camera_angle",
+    "movement",
+    "lighting",
+    "setting",
+    "subject",
+    "on_screen_text",
+    "shot_function",
+    "frame_progression",
+    "production_patterns",
+    "recreation_guidance",
 }
 
 
@@ -413,3 +432,243 @@ class TestPreflightModelCheck:
             model="nonexistent-model",
         )
         assert callable(fn)
+
+
+# ---------------------------------------------------------------------------
+# TestStructuredOutputPayload — Ollama structured output (format + temperature)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredOutputPayload:
+    """Tests for Ollama structured JSON output via the ``format`` parameter.
+
+    Issue #38 P0-A: The Ollama request payload must include a ``format`` key
+    with a JSON schema describing the 13 enrichment fields, and ``temperature``
+    set to 0 for deterministic output. This prevents non-JSON prose responses.
+    """
+
+    @pytest.fixture
+    def capture_dir_with_frames(self, tmp_path: Path) -> Path:
+        for name in SAMPLE_PROMPT["frame_references"]:
+            (tmp_path / name).write_bytes(b"\x89PNG_FAKE_IMAGE_DATA")
+        return tmp_path
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_includes_format_key(self, mock_post, capture_dir_with_frames):
+        """Ollama payload must include a 'format' key for structured output."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        assert "format" in payload, "Payload missing 'format' key for structured output"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_is_json_schema_object(self, mock_post, capture_dir_with_frames):
+        """The 'format' value must be a dict representing a JSON schema."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        fmt = payload["format"]
+        assert isinstance(fmt, dict), f"Expected dict, got {type(fmt)}"
+        assert fmt.get("type") == "object", "Schema root must be type=object"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_contains_all_enrichment_keys(self, mock_post, capture_dir_with_frames):
+        """The JSON schema properties must include all 13 SHOT_ENRICHMENT_FIELDS keys."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        schema_props = payload["format"].get("properties", {})
+        for key in EXPECTED_ENRICHMENT_KEYS:
+            assert key in schema_props, f"Schema missing enrichment key: {key}"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_required_lists_all_keys(self, mock_post, capture_dir_with_frames):
+        """The JSON schema 'required' array must list all enrichment keys."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        required = set(payload["format"].get("required", []))
+        expected = set(EXPECTED_ENRICHMENT_KEYS)
+        assert required == expected, f"Required mismatch: {required.symmetric_difference(expected)}"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_sets_temperature_zero(self, mock_post, capture_dir_with_frames):
+        """Payload must include temperature=0 for deterministic output."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        assert "options" in payload, "Payload missing 'options' key"
+        assert payload["options"].get("temperature") == 0, "temperature must be 0"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_format_schema_movement_is_array_type(self, mock_post, capture_dir_with_frames):
+        """The 'movement' field in the schema should be typed as array (multi-select)."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"response": '{"scene_summary": "test"}'}),
+        )
+        fn = make_ollama_enrich_fn(capture_dir=str(capture_dir_with_frames))
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        movement_prop = payload["format"]["properties"]["movement"]
+        assert movement_prop.get("type") == "array", "movement should be array type"
+
+
+class TestMakeGeminiEnrichFn:
+    def test_requires_api_key(self, tmp_path: Path):
+        with pytest.raises(RuntimeError, match="API key"):
+            make_gemini_enrich_fn(capture_dir=str(tmp_path), api_key="")
+
+    def test_returns_callable(self, tmp_path: Path):
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(tmp_path),
+            api_key="gemini-key",
+        )
+        assert callable(fn)
+
+
+class TestGeminiRequestPayload:
+    @pytest.fixture
+    def capture_dir_with_frames(self, tmp_path: Path) -> Path:
+        for name in SAMPLE_PROMPT["frame_references"]:
+            (tmp_path / name).write_bytes(b"\x89PNG_FAKE_IMAGE_DATA")
+        return tmp_path
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_posts_to_gemini_generate_content_endpoint(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"scene_summary":"test"}'}]}}]
+            }),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+            model="gemini-2.0-flash",
+        )
+        fn(SAMPLE_PROMPT)
+        assert mock_post.call_args[0][0] == (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            "models/gemini-2.0-flash:generateContent"
+        )
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_uses_system_instruction_and_json_schema(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"scene_summary":"test"}'}]}}]
+            }),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+        )
+        fn(SAMPLE_PROMPT)
+        payload = mock_post.call_args[1]["json"]
+        headers = mock_post.call_args[1]["headers"]
+        assert payload["systemInstruction"]["parts"][0]["text"] == SAMPLE_PROMPT["system_prompt"]
+        assert payload["contents"][0]["parts"][0]["text"] == SAMPLE_PROMPT["user_prompt"]
+        assert payload["generationConfig"]["responseMimeType"] == "application/json"
+        assert "responseJsonSchema" in payload["generationConfig"]
+        assert payload["generationConfig"]["temperature"] == 0
+        assert headers["x-goog-api-key"] == "gemini-key"
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_payload_contains_inline_images(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"scene_summary":"test"}'}]}}]
+            }),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+        )
+        fn(SAMPLE_PROMPT)
+        parts = mock_post.call_args[1]["json"]["contents"][0]["parts"]
+        image_parts = [part for part in parts[1:] if "inline_data" in part]
+        assert len(image_parts) == 2
+        for part in image_parts:
+            decoded = base64.b64decode(part["inline_data"]["data"])
+            assert len(decoded) > 0
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_returns_candidate_text(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"scene_summary":"gemini"}'}]}}]
+            }),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+        )
+        assert fn(SAMPLE_PROMPT) == '{"scene_summary":"gemini"}'
+        assert fn.last_usage is None
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_records_usage_metadata_on_last_usage(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "candidates": [{"content": {"parts": [{"text": '{"scene_summary":"gemini"}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 1200,
+                    "candidatesTokenCount": 300,
+                    "thoughtsTokenCount": 200,
+                    "totalTokenCount": 1700,
+                },
+            }),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+            model="gemini-2.5-flash",
+        )
+        fn(SAMPLE_PROMPT)
+        assert fn.last_usage == {
+            "model": "gemini-2.5-flash",
+            "prompt_tokens": 1200,
+            "candidate_tokens": 300,
+            "thoughts_tokens": 200,
+            "output_tokens": 500,
+            "total_tokens": 1700,
+            "estimated_cost_usd": 0.0021,
+        }
+
+    @patch("publisher.llm_enricher.requests.post")
+    def test_no_candidates_raises_runtime_error(self, mock_post, capture_dir_with_frames):
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"candidates": []}),
+        )
+        fn = make_gemini_enrich_fn(
+            capture_dir=str(capture_dir_with_frames),
+            api_key="gemini-key",
+        )
+        with pytest.raises(RuntimeError, match="no candidates"):
+            fn(SAMPLE_PROMPT)

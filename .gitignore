@@ -132,6 +132,7 @@ token.json
 client_secret.json
 .DS_Store
 captures/
+storyboard_output/
 pipeline-server/node_modules/
 
 # Spyder project settings

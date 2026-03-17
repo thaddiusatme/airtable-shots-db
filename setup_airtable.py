@@ -239,6 +239,81 @@ def add_frames_table(base_id):
     print("✅ Frames table created with all fields!")
 
 
+def add_storyboards_table(base_id):
+    """Add the Storyboards table to an EXISTING Airtable base (additive only).
+
+    This function NEVER calls workspace.create_base(). It only adds the
+    Storyboards table and its fields to the base identified by base_id.
+
+    Idempotent: if Storyboards table already exists, prints a warning and returns.
+    """
+    base = api.base(base_id)
+    schema = base.schema()
+
+    table_names = [t.name for t in schema.tables]
+    if "Storyboards" in table_names:
+        print("⚠️  Storyboards table already exists — skipping creation.")
+        return
+
+    print(f"Creating Storyboards table in base {base_id}...")
+    base.create_table("Storyboards", [{"name": "Storyboard Key", "type": "singleLineText"}])
+
+    schema = base.schema()
+    storyboards_table_id = get_table_id(schema, "Storyboards")
+    videos_table_id = get_table_id(schema, "Videos")
+    shots_table_id = get_table_id(schema, "Shots")
+
+    print("Adding fields to Storyboards table...")
+
+    create_field(base_id, storyboards_table_id, {
+        "name": "Video",
+        "type": "multipleRecordLinks",
+        "options": {"linkedTableId": videos_table_id},
+    })
+    create_field(base_id, storyboards_table_id, {
+        "name": "Shot",
+        "type": "multipleRecordLinks",
+        "options": {"linkedTableId": shots_table_id},
+    })
+
+    create_field(base_id, storyboards_table_id, {"name": "Shot Label", "type": "singleLineText"})
+    create_field(base_id, storyboards_table_id, {
+        "name": "Variant",
+        "type": "singleSelect",
+        "options": {"choices": [{"name": "A"}, {"name": "B"}, {"name": "C"}]},
+    })
+    create_field(base_id, storyboards_table_id, {"name": "Image", "type": "multipleAttachments"})
+
+    create_field(base_id, storyboards_table_id, {"name": "Positive Prompt", "type": "multilineText"})
+    create_field(base_id, storyboards_table_id, {"name": "Negative Prompt", "type": "multilineText"})
+    create_field(base_id, storyboards_table_id, {
+        "name": "Width",
+        "type": "number",
+        "options": {"precision": 0},
+    })
+    create_field(base_id, storyboards_table_id, {
+        "name": "Height",
+        "type": "number",
+        "options": {"precision": 0},
+    })
+
+    create_field(base_id, storyboards_table_id, {"name": "ComfyUI Prompt ID", "type": "singleLineText"})
+    create_field(base_id, storyboards_table_id, {"name": "Generator Version", "type": "singleLineText"})
+    create_field(base_id, storyboards_table_id, {"name": "Handoff Version", "type": "singleLineText"})
+    create_field(base_id, storyboards_table_id, {"name": "Workflow Name", "type": "singleLineText"})
+    create_field(base_id, storyboards_table_id, {
+        "name": "Generated At",
+        "type": "dateTime",
+        "options": {
+            "dateFormat": {"name": "local"},
+            "timeFormat": {"name": "12hour"},
+            "timeZone": "client",
+        },
+    })
+
+    print("✅ Storyboards table created with all fields!")
+
+
 ENRICHMENT_FIELD_DEFINITIONS = [
     {"name": "How It Is Shot", "type": "multilineText"},
     {"name": "Frame Progression", "type": "multilineText"},
@@ -282,6 +357,9 @@ if __name__ == "__main__":
     if "--add-frames-only" in sys.argv:
         base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
         add_frames_table(base_id)
+    elif "--add-storyboards-table" in sys.argv:
+        base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
+        add_storyboards_table(base_id)
     elif "--add-enrichment-fields" in sys.argv:
         base_id = os.getenv("AIRTABLE_BASE_ID", "appWSbpJAxjCyLfrZ")
         add_enrichment_fields(base_id)

@@ -109,8 +109,13 @@ def main():
     parser.add_argument("--video-id", type=str, required=True, help="Video ID to fetch shots for")
     parser.add_argument("--shot-id", type=str, default=None, help="Optional: single shot record ID")
     parser.add_argument("--json-only", action="store_true", help="Output only JSON (no pretty-print)")
-    parser.add_argument("--dry-run", action="store_true", help="Generate dry-run JSON files")
-    parser.add_argument("--output-dir", type=str, default="./storyboard_output", help="Output directory for dry-run files")
+    parser.add_argument("--dry-run", action="store_true", help="Generate dry-run JSON files (default: True)")
+    parser.add_argument("--no-dry-run", action="store_true", help="Run real ComfyUI generation (requires --comfyui-url)")
+    parser.add_argument("--output-dir", type=str, default="./storyboard_output", help="Output directory for generated files")
+    parser.add_argument("--comfyui-url", type=str, default="http://127.0.0.1:8188", help="ComfyUI server URL")
+    parser.add_argument("--timeout", type=int, default=300, help="ComfyUI generation timeout in seconds")
+    parser.add_argument("--upload-to-r2", action="store_true", help="Upload generated PNGs to R2 and create Airtable Storyboards records")
+    parser.add_argument("--shot-label", type=str, default=None, help="Limit to single shot by label (e.g., S01)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -121,8 +126,44 @@ def main():
         print("ERROR: Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID in .env", file=sys.stderr)
         sys.exit(1)
 
+    # Validate flags
+    if args.no_dry_run and args.dry_run:
+        print("ERROR: Cannot specify both --dry-run and --no-dry-run", file=sys.stderr)
+        sys.exit(1)
+    
+    if args.upload_to_r2 and not args.no_dry_run:
+        print("ERROR: --upload-to-r2 requires --no-dry-run (can't upload dry-run JSON files)", file=sys.stderr)
+        sys.exit(1)
+    
+    # R2 config for uploads
+    r2_config = None
+    s3_client = None
+    if args.upload_to_r2:
+        from publisher.r2_uploader import R2Config, create_s3_client
+        
+        r2_account_id = os.getenv("R2_ACCOUNT_ID")
+        r2_access_key = os.getenv("R2_ACCESS_KEY_ID")
+        r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
+        r2_bucket = os.getenv("R2_BUCKET_NAME", "shot-image")
+        r2_public_url = os.getenv("R2_PUBLIC_URL")
+        
+        if not all([r2_account_id, r2_access_key, r2_secret_key, r2_public_url]):
+            print("ERROR: R2 upload requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_URL in .env", file=sys.stderr)
+            sys.exit(1)
+        
+        r2_config = R2Config(
+            account_id=r2_account_id,
+            access_key_id=r2_access_key,
+            secret_access_key=r2_secret_key,
+            bucket_name=r2_bucket,
+            public_url=r2_public_url,
+        )
+        s3_client = create_s3_client(r2_config)
+
     api = Api(api_key)
+    videos_table = api.base(base_id).table("Videos")
     shots_table = api.base(base_id).table("Shots")
+    storyboards_table = api.base(base_id).table("Storyboards") if args.upload_to_r2 else None
 
     print(f"Fetching enriched shots for video: {args.video_id}")
     print(f"  Assembler version: {ASSEMBLER_VERSION}")
@@ -131,11 +172,47 @@ def main():
     print(f"  Style preset: {STORYBOARD_STYLE_DEFAULTS['style_preset']}")
     print(f"  Variants: {len(VARIANT_DEFINITIONS)} ({', '.join(v['label'] for v in VARIANT_DEFINITIONS)})")
 
-    records = fetch_enriched_shots_for_storyboard(
-        shots_table,
-        video_id=args.video_id,
-        shot_id=args.shot_id,
-    )
+    # Airtable schema note: Shots.{Video} is a linked-record field to Videos.
+    # The linked value is the Video record ID (rec...), not the Videos.{Video ID}
+    # text field. So for a YouTube video_id like "l5ggH-YhuAw", we resolve the
+    # corresponding Videos record ID and filter shots by that record ID.
+    video_record_id = None
+    if args.video_id.startswith("rec"):
+        video_record_id = args.video_id
+    else:
+        matching_videos = videos_table.all(
+            formula=f"{{Video ID}}='{args.video_id}'",
+            max_records=1,
+        )
+        if matching_videos:
+            video_record_id = matching_videos[0]["id"]
+
+    if video_record_id:
+        print(f"Resolved Videos record: {video_record_id}")
+        # Airtable formulas against linked-record fields can be brittle (they may
+        # evaluate as display values rather than record IDs). To avoid false
+        # negatives, fetch enriched shots and filter client-side by linked video.
+        enriched_records = shots_table.all(formula="{AI Prompt Version}!=''")
+        records = [
+            r for r in enriched_records
+            if video_record_id in (r.get("fields", {}).get("Video", []) or [])
+        ]
+        if args.shot_id:
+            records = [r for r in records if r.get("id") == args.shot_id]
+    
+    # Filter by shot label if specified
+    if args.shot_label:
+        records = [
+            r for r in records
+            if r.get("fields", {}).get("Shot Label") == args.shot_label
+        ]
+    else:
+        # Backward-compatible fallback: attempt the original filter.
+        records = fetch_enriched_shots_for_storyboard(
+            shots_table,
+            video_id=args.video_id,
+            shot_id=args.shot_id,
+        )
 
     if not records:
         print("\nNo enriched shots found. Run enrichment first.")
@@ -172,7 +249,7 @@ def main():
     else:
         # Summary
         print(f"\n{'='*72}")
-        print(f"  SUMMARY")
+        print("  SUMMARY")
         print(f"{'='*72}")
         print(f"  Shots processed: {len(records)}")
         print(f"  Total variants generated: {total_variants}")
@@ -182,24 +259,73 @@ def main():
         print(f"  Aspect ratio: {STORYBOARD_STYLE_DEFAULTS['aspect_ratio']}")
         print(f"  Dimensions: {STORYBOARD_STYLE_DEFAULTS['width']}x{STORYBOARD_STYLE_DEFAULTS['height']}")
 
-    # Dry-run generation
-    if args.dry_run:
-        print("\n--- Dry-Run Generation ---")
+    # Generation (dry-run or real)
+    if args.dry_run or args.no_dry_run:
+        is_dry_run = not args.no_dry_run
+        mode = "Dry-Run" if is_dry_run else "Real ComfyUI"
+        print(f"\n--- {mode} Generation ---")
         print(f"  Output directory: {args.output_dir}")
-
+        
+        generate_fn = None
+        if not is_dry_run:
+            from publisher.storyboard_generator import make_comfyui_generate_fn
+            print(f"  ComfyUI URL: {args.comfyui_url}")
+            print(f"  Timeout: {args.timeout}s")
+            try:
+                generate_fn = make_comfyui_generate_fn(
+                    comfyui_url=args.comfyui_url,
+                    timeout=args.timeout,
+                )
+            except FileNotFoundError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+        
         gen_results = generate_storyboard_series(
             series,
             video_id=args.video_id,
             output_dir=args.output_dir,
-            dry_run=True,
+            dry_run=is_dry_run,
+            generate_fn=generate_fn,
         )
 
         total_files = sum(len(r) for r in gen_results)
-        print(f"  Files written: {total_files}")
+        print(f"  Files generated: {total_files}")
         for shot_idx, shot_results in enumerate(gen_results):
             for path in shot_results:
                 if path:
                     print(f"    {path}")
+        
+        # Upload to R2 and create Airtable records
+        if args.upload_to_r2 and not is_dry_run:
+            from publisher.storyboard_uploader import upload_and_attach_storyboards
+            
+            print("\n--- R2 Upload + Airtable Storyboards ---")
+            variant_labels = [v["label"] for v in VARIANT_DEFINITIONS]
+            
+            for shot_idx, (record, payload, shot_outputs) in enumerate(zip(records, series, gen_results)):
+                shot_label = record["fields"].get("Shot Label", "???")
+                shot_record_id = record["id"]
+                
+                print(f"  Processing {shot_label}...")
+                
+                storyboard_record_ids = upload_and_attach_storyboards(
+                    s3_client=s3_client,
+                    r2_config=r2_config,
+                    storyboards_table=storyboards_table,
+                    video_id=args.video_id,
+                    shot_label=shot_label,
+                    variant_outputs=shot_outputs,
+                    variant_labels=variant_labels,
+                    payload=payload,
+                    video_record_id=video_record_id,
+                    shot_record_id=shot_record_id,
+                )
+                
+                successful = sum(1 for rid in storyboard_record_ids if rid is not None)
+                print(f"    Created {successful}/{len(storyboard_record_ids)} Storyboard records")
+            
+            print("  Upload complete.")
+        
         print()
 
 

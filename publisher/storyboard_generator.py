@@ -210,19 +210,37 @@ def generate_storyboard_series(
 
 def make_comfyui_generate_fn(
     *,
+    workflow_path: str | None = None,
     comfyui_url: str = "http://localhost:8188",
-    timeout: int = 120,
+    timeout: int = 300,
 ) -> GenerateFn:
     """Factory returning a generate_fn that calls ComfyUI for image generation.
 
     Args:
-        comfyui_url: Base URL for the ComfyUI API.
-        timeout: Request timeout in seconds.
+        workflow_path: Path to ComfyUI workflow JSON (API format).
+            Defaults to comfyui/workflows/Storyboarder_api.json.
+        comfyui_url: Base URL for the ComfyUI API (default: http://localhost:8188).
+        timeout: Generation timeout in seconds (default: 300).
 
     Returns:
         Callable matching the GenerateFn signature.
     """
-    import requests
+    from pathlib import Path
+    import sys
+    
+    repo_root = Path(__file__).parent.parent
+    sys.path.insert(0, str(repo_root))
+    
+    from comfyui.comfyui_client import ComfyUIClient
+    
+    if workflow_path is None:
+        workflow_path = str(repo_root / "comfyui" / "workflows" / "Storyboarder_api.json")
+    
+    client = ComfyUIClient(base_url=comfyui_url, timeout=timeout)
+    workflow_path_obj = Path(workflow_path)
+    
+    if not workflow_path_obj.exists():
+        raise FileNotFoundError(f"ComfyUI workflow not found: {workflow_path}")
 
     def _generate(
         positive_prompt: str,
@@ -232,44 +250,23 @@ def make_comfyui_generate_fn(
         output_path: str,
     ) -> str:
         """Call ComfyUI API to generate an image and save to output_path."""
-        try:
-            # Minimal ComfyUI /prompt API payload
-            # This is a placeholder workflow — real ComfyUI workflows
-            # will need a proper workflow JSON with node IDs
-            api_payload = {
-                "prompt": {
-                    "positive": positive_prompt,
-                    "negative": negative_prompt,
-                    "width": width,
-                    "height": height,
-                },
-            }
-
-            response = requests.post(
-                f"{comfyui_url}/prompt",
-                json=api_payload,
-                timeout=timeout,
-            )
-            response.raise_for_status()
-
-            # For now, save the response content as the output
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, "wb") as f:
-                f.write(response.content)
-
-            return output_path
-
-        except requests.ConnectionError as exc:
-            raise RuntimeError(
-                f"ComfyUI connection failed at {comfyui_url}: {exc}"
-            ) from exc
-        except requests.Timeout as exc:
-            raise RuntimeError(
-                f"ComfyUI request timed out after {timeout}s: {exc}"
-            ) from exc
-        except requests.HTTPError as exc:
-            raise RuntimeError(
-                f"ComfyUI request failed ({exc.response.status_code}): {exc}"
-            ) from exc
+        import hashlib
+        
+        seed_input = f"{positive_prompt}:{negative_prompt}:{width}:{height}"
+        seed = int(hashlib.sha256(seed_input.encode()).hexdigest()[:16], 16)
+        
+        output_path_obj = Path(output_path)
+        
+        client.generate_image(
+            workflow_path=workflow_path_obj,
+            positive_prompt=positive_prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            output_path=output_path_obj,
+            width=width,
+            height=height,
+        )
+        
+        return output_path
 
     return _generate

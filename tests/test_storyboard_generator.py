@@ -10,10 +10,14 @@ TDD RED phase: Expected to fail with ImportError (module does not exist).
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
+import requests
 
+from comfyui.comfyui_client import ComfyUIClient
 from publisher.storyboard_generator import (
     GENERATOR_VERSION,
     generate_shot_storyboard,
@@ -297,7 +301,14 @@ class TestGenerateShotStoryboardWithGenerateFn:
 
     def _make_generate_fn(self):
         """Create a mock generate_fn that writes a dummy PNG."""
-        def fake_generate(positive_prompt, negative_prompt, width, height, output_path):
+        def fake_generate(
+            positive_prompt,
+            negative_prompt,
+            width,
+            height,
+            output_path,
+            reference_image_path=None,
+        ):
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "wb") as f:
                 f.write(b"FAKE_PNG_DATA")
@@ -367,6 +378,30 @@ class TestGenerateShotStoryboardWithGenerateFn:
             if kwargs:
                 assert "width" in kwargs
                 assert "height" in kwargs
+
+    def test_generate_fn_receives_reference_image_path(self):
+        payload = _make_payload()
+        payload["reference_images"] = [
+            {"url": "https://r2.example.com/captures/vid123/frame_00001.png", "role": "composition"},
+            {"url": "https://r2.example.com/captures/vid123/frame_00005.png", "role": "composition"},
+        ]
+        mock_fn = self._make_generate_fn()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            montage_path = Path(tmpdir) / "montage.png"
+            with patch("publisher.storyboard_generator._build_reference_montage", return_value=montage_path) as mock_montage:
+                generate_shot_storyboard(
+                    payload,
+                    video_id="vid123",
+                    output_dir=tmpdir,
+                    dry_run=False,
+                    generate_fn=mock_fn,
+                )
+
+            mock_montage.assert_called_once()
+            first_call = mock_fn.call_args_list[0]
+            kwargs = first_call.kwargs if first_call.kwargs else {}
+            assert kwargs.get("reference_image_path") == montage_path
 
 
 # ---------------------------------------------------------------------------
@@ -512,3 +547,130 @@ class TestMakeComfyuiGenerateFn:
                     height=576,
                     output_path=output_path,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Test: ComfyUIClient reference-image injection
+# ---------------------------------------------------------------------------
+
+
+class TestComfyUIClientReferenceInjection:
+    """ComfyUI workflow injection should explicitly mark uploaded inputs."""
+
+    def test_reference_image_sets_upload_input(self):
+        client = ComfyUIClient()
+        workflow = {
+            "12": {
+                "inputs": {
+                    "image": "reference_montage.png",
+                },
+                "class_type": "LoadImage",
+            },
+            "4": {"inputs": {"text": ""}},
+            "5": {"inputs": {"text": ""}},
+            "1": {"inputs": {"seed": 0}},
+            "6": {"inputs": {"width": 1024, "height": 576}},
+            "8": {"inputs": {"filename_prefix": "ComfyUI"}},
+        }
+
+        updated = client.inject_prompt(
+            workflow,
+            positive_prompt="test",
+            negative_prompt="bad",
+            seed=123,
+            width=1024,
+            height=576,
+            filename_prefix="test",
+            reference_image="montage.png",
+        )
+
+        assert updated["12"]["inputs"]["image"] == "montage.png"
+        assert updated["12"]["inputs"]["upload"] == "input"
+
+
+# ---------------------------------------------------------------------------
+# Test: ComfyUIClient polling observability (GH-56)
+# ---------------------------------------------------------------------------
+
+
+class TestComfyUIClientPollingObservability:
+    """Polling errors should include actionable history state diagnostics."""
+
+    @staticmethod
+    def _response_with_json(payload):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = payload
+        return response
+
+    def test_timeout_includes_prompt_id_and_incomplete_history_state(self):
+        client = ComfyUIClient(timeout=1)
+        prompt_id = "prompt-123"
+        incomplete_history = {
+            prompt_id: {
+                "status": {
+                    "completed": False,
+                    "status_str": "running",
+                },
+                "outputs": {},
+            }
+        }
+
+        with (
+            patch("comfyui.comfyui_client.requests.get", return_value=self._response_with_json(incomplete_history)),
+            patch("comfyui.comfyui_client.time.sleep", return_value=None),
+            patch("comfyui.comfyui_client.time.time", side_effect=[0.0, 0.0, 1.1]),
+        ):
+            with pytest.raises(TimeoutError) as exc_info:
+                client.poll_history(prompt_id, poll_interval=0.01)
+
+        message = str(exc_info.value)
+        assert "prompt_id=prompt-123" in message
+        assert "history_state=incomplete" in message
+        assert "status.completed=False" in message
+
+    def test_timeout_includes_no_history_entry_state(self):
+        client = ComfyUIClient(timeout=1)
+        prompt_id = "prompt-456"
+
+        with (
+            patch("comfyui.comfyui_client.requests.get", return_value=self._response_with_json({})),
+            patch("comfyui.comfyui_client.time.sleep", return_value=None),
+            patch("comfyui.comfyui_client.time.time", side_effect=[0.0, 0.0, 1.1]),
+        ):
+            with pytest.raises(TimeoutError) as exc_info:
+                client.poll_history(prompt_id, poll_interval=0.01)
+
+        message = str(exc_info.value)
+        assert "prompt_id=prompt-456" in message
+        assert "history_state=missing" in message
+
+    def test_timeout_includes_malformed_history_shape_state(self):
+        client = ComfyUIClient(timeout=1)
+        prompt_id = "prompt-789"
+
+        with (
+            patch("comfyui.comfyui_client.requests.get", return_value=self._response_with_json(["unexpected"])),
+            patch("comfyui.comfyui_client.time.sleep", return_value=None),
+            patch("comfyui.comfyui_client.time.time", side_effect=[0.0, 0.0, 1.1]),
+        ):
+            with pytest.raises(TimeoutError) as exc_info:
+                client.poll_history(prompt_id, poll_interval=0.01)
+
+        message = str(exc_info.value)
+        assert "prompt_id=prompt-789" in message
+        assert "history_state=malformed" in message
+
+    def test_request_failure_includes_prompt_id_and_poll_context(self):
+        client = ComfyUIClient(timeout=5)
+
+        with patch(
+            "comfyui.comfyui_client.requests.get",
+            side_effect=requests.RequestException("connection reset"),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.poll_history("prompt-500", poll_interval=0.01)
+
+        message = str(exc_info.value)
+        assert "prompt_id=prompt-500" in message
+        assert "poll_history" in message

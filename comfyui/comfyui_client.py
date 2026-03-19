@@ -17,6 +17,9 @@ from typing import Dict, Any
 
 class ComfyUIClient:
     """Client for interacting with ComfyUI REST API."""
+
+    _ERROR_SNIPPET_LIMIT = 240
+    _QUEUE_EXPECTED_NODES = ("8", "12")
     
     def __init__(self, base_url: str = "http://127.0.0.1:8188", timeout: int = 300):
         """
@@ -114,15 +117,87 @@ class ComfyUIClient:
         Raises:
             requests.RequestException: If API call fails
         """
+        endpoint = "/prompt"
+        workflow_summary = self._summarize_workflow(workflow)
         payload = {"prompt": workflow}
         try:
-            response = requests.post(f"{self.base_url}/prompt", json=payload, timeout=10)
+            response = requests.post(f"{self.base_url}{endpoint}", json=payload, timeout=10)
             response.raise_for_status()
 
             result = response.json()
-            return result["prompt_id"]
+            if not isinstance(result, dict):
+                raise RuntimeError(
+                    f"ComfyUI prompt queue malformed response at {endpoint}: "
+                    f"response_type={type(result).__name__}; {workflow_summary}"
+                )
+
+            prompt_id = result.get("prompt_id")
+            if not prompt_id:
+                raise RuntimeError(
+                    f"ComfyUI prompt queue missing prompt_id at {endpoint}: "
+                    f"response_keys={sorted(result.keys())}; {workflow_summary}"
+                )
+
+            return prompt_id
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", "unknown")
+            response_text = getattr(exc.response, "text", "")
+            response_snippet = self._sanitize_error_snippet(response_text)
+            prompt_id = self._extract_prompt_id_from_http_error(exc)
+
+            prompt_context = f"prompt_id={prompt_id}; " if prompt_id else ""
+            raise RuntimeError(
+                f"ComfyUI prompt queue failed at {endpoint}: "
+                f"{prompt_context}status={status_code}; "
+                f"response_snippet={response_snippet}; {workflow_summary}"
+            ) from exc
         except requests.RequestException as exc:
-            raise RuntimeError(f"ComfyUI prompt queue failed: {exc}") from exc
+            raise RuntimeError(
+                f"ComfyUI prompt queue failed at {endpoint}: {exc}; {workflow_summary}"
+            ) from exc
+
+    @classmethod
+    def _sanitize_error_snippet(cls, body: Any) -> str:
+        if body is None:
+            return "<empty>"
+
+        snippet = str(body).strip().replace("\n", " ")
+        if not snippet:
+            return "<empty>"
+
+        if len(snippet) <= cls._ERROR_SNIPPET_LIMIT:
+            return snippet
+
+        return f"{snippet[:cls._ERROR_SNIPPET_LIMIT]}<truncated>"
+
+    @classmethod
+    def _summarize_workflow(cls, workflow: Any) -> str:
+        if not isinstance(workflow, dict):
+            return f"workflow=malformed workflow_type={type(workflow).__name__}"
+
+        node_count = len(workflow)
+        node_presence = [
+            f"node_{node}={'present' if node in workflow else 'missing'}"
+            for node in cls._QUEUE_EXPECTED_NODES
+        ]
+        return f"workflow_nodes={node_count} {' '.join(node_presence)}"
+
+    @staticmethod
+    def _extract_prompt_id_from_http_error(exc: requests.HTTPError) -> str | None:
+        response = getattr(exc, "response", None)
+        if response is None:
+            return None
+
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+
+        if isinstance(payload, dict):
+            prompt_id = payload.get("prompt_id")
+            return str(prompt_id) if prompt_id else None
+
+        return None
 
     @staticmethod
     def _summarize_history_state(history: Any, prompt_id: str) -> str:
@@ -278,7 +353,11 @@ class ComfyUIClient:
             reference_image=reference_image_name,
         )
         
-        prompt_id = self.queue_prompt(workflow)
+        try:
+            prompt_id = self.queue_prompt(workflow)
+        except RuntimeError as exc:
+            raise RuntimeError(f"ComfyUI generate_image failed at queue_prompt: {exc}") from exc
+
         history_entry = self.poll_history(prompt_id)
 
         outputs = history_entry.get("outputs", {})

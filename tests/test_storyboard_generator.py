@@ -674,3 +674,118 @@ class TestComfyUIClientPollingObservability:
         message = str(exc_info.value)
         assert "prompt_id=prompt-500" in message
         assert "poll_history" in message
+
+
+class TestComfyUIClientQueueObservability:
+    """Queue submission errors should include actionable /prompt diagnostics."""
+
+    @staticmethod
+    def _response_with_http_error(status_code: int, body: str):
+        response = MagicMock()
+        response.status_code = status_code
+        response.text = body
+        response.raise_for_status.side_effect = requests.HTTPError(
+            f"{status_code} Client Error",
+            response=response,
+        )
+        return response
+
+    @staticmethod
+    def _response_with_json(payload):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = payload
+        return response
+
+    def test_queue_http_400_includes_status_endpoint_and_body_snippet(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+        workflow = {"8": {"inputs": {"filename_prefix": "test"}}}
+        response = self._response_with_http_error(
+            400,
+            "invalid prompt: required input 'model' for node 12 is missing",
+        )
+
+        with patch("comfyui.comfyui_client.requests.post", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.queue_prompt(workflow)
+
+        message = str(exc_info.value)
+        assert "/prompt" in message
+        assert "status=400" in message
+        assert "response_snippet=" in message
+        assert "required input 'model'" in message
+
+    def test_queue_malformed_response_shape_is_distinct(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+
+        with patch(
+            "comfyui.comfyui_client.requests.post",
+            return_value=self._response_with_json(["unexpected"]),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.queue_prompt({"8": {"inputs": {"filename_prefix": "test"}}})
+
+        message = str(exc_info.value)
+        assert "malformed" in message
+        assert "response_type=list" in message
+
+    def test_queue_missing_prompt_id_is_distinct(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+
+        with patch(
+            "comfyui.comfyui_client.requests.post",
+            return_value=self._response_with_json({"status": "ok"}),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.queue_prompt({"8": {"inputs": {"filename_prefix": "test"}}})
+
+        message = str(exc_info.value)
+        assert "missing prompt_id" in message
+        assert "/prompt" in message
+
+    def test_queue_http_error_response_snippet_is_truncated(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+        long_body = "x" * 500
+        response = self._response_with_http_error(400, long_body)
+
+        with patch("comfyui.comfyui_client.requests.post", return_value=response):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.queue_prompt({"8": {"inputs": {"filename_prefix": "test"}}})
+
+        message = str(exc_info.value)
+        assert "response_snippet=" in message
+        assert "<truncated>" in message
+
+
+class TestComfyUIClientGenerateImageStageContext:
+    """generate_image should preserve queue stage context on submit failure."""
+
+    def test_generate_image_queue_failure_mentions_queue_stage(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+        workflow = {
+            "1": {"inputs": {"seed": 0}},
+            "4": {"inputs": {"text": ""}},
+            "5": {"inputs": {"text": ""}},
+            "6": {"inputs": {"width": 1024, "height": 576}},
+            "8": {"inputs": {"filename_prefix": "ComfyUI"}},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "out.png"
+
+            with (
+                patch.object(client, "load_workflow", return_value=workflow),
+                patch.object(client, "queue_prompt", side_effect=RuntimeError("ComfyUI prompt queue failed: boom")),
+            ):
+                with pytest.raises(RuntimeError) as exc_info:
+                    client.generate_image(
+                        workflow_path=Path("unused.json"),
+                        positive_prompt="good",
+                        negative_prompt="bad",
+                        seed=123,
+                        output_path=output_path,
+                    )
+
+        message = str(exc_info.value)
+        assert "queue_prompt" in message
+        assert "prompt queue failed" in message

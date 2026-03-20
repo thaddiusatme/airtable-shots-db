@@ -233,6 +233,43 @@ def build_storyboard_series(
 # ---------------------------------------------------------------------------
 
 
+def fetch_shot_frame_urls(shot_fields: dict[str, Any]) -> list[dict[str, str]]:
+    """Extract frame attachment URLs from Scene Start/End Airtable fields.
+
+    Args:
+        shot_fields: Airtable shot record fields dict.
+
+    Returns:
+        List of frame dicts with 'url' and 'role' keys. Role is always
+        'composition' for IPAdapter conditioning. Preserves Scene Start
+        before Scene End ordering. Returns empty list if no attachments
+        found or fields are missing.
+    """
+    frame_urls: list[dict[str, str]] = []
+    
+    # Process Scene Start attachments first
+    scene_start = shot_fields.get("Scene Start", [])
+    if isinstance(scene_start, list):
+        for attachment in scene_start:
+            if isinstance(attachment, dict) and attachment.get("url"):
+                frame_urls.append({
+                    "url": attachment["url"],
+                    "role": "composition"
+                })
+    
+    # Process Scene End attachments second
+    scene_end = shot_fields.get("Scene End", [])
+    if isinstance(scene_end, list):
+        for attachment in scene_end:
+            if isinstance(attachment, dict) and attachment.get("url"):
+                frame_urls.append({
+                    "url": attachment["url"],
+                    "role": "composition"
+                })
+    
+    return frame_urls
+
+
 def fetch_enriched_shots_for_storyboard(
     shots_table,
     *,

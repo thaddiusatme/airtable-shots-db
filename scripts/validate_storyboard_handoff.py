@@ -40,6 +40,7 @@ from publisher.storyboard_handoff import (
     VARIANT_DEFINITIONS,
     build_storyboard_series,
     fetch_enriched_shots_for_storyboard,
+    fetch_shot_frame_urls,
 )
 
 
@@ -220,9 +221,20 @@ def main():
 
     print(f"\nFound {len(records)} enriched shots.")
 
-    # Build payloads
+    # Extract frame URLs from shot records for IPAdapter conditioning
+    reference_frames_by_shot: dict[str, list[dict[str, str]]] = {}
+    for record in records:
+        shot_label = record["fields"].get("Shot Label", "")
+        frame_urls = fetch_shot_frame_urls(record["fields"])
+        if frame_urls:
+            reference_frames_by_shot[shot_label] = frame_urls
+            print(f"  {shot_label}: {len(frame_urls)} frame URLs")
+        else:
+            print(f"  {shot_label}: no frame attachments")
+
+    # Build payloads with reference frames
     shots_fields = [r["fields"] for r in records]
-    series = build_storyboard_series(shots_fields)
+    series = build_storyboard_series(shots_fields, reference_frames_by_shot=reference_frames_by_shot)
 
     # Aggregate stats
     total_positive_len = 0

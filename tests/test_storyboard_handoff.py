@@ -18,6 +18,7 @@ from publisher.storyboard_handoff import (
     build_storyboard_payload,
     build_storyboard_series,
     fetch_enriched_shots_for_storyboard,
+    fetch_shot_frame_urls,
     select_reference_frames,
 )
 
@@ -452,3 +453,243 @@ class TestFetchEnrichedShotsForStoryboard:
         call_kwargs = table.all.call_args
         formula = call_kwargs.kwargs.get("formula") or call_kwargs[1].get("formula", "")
         assert "AI Prompt Version" in formula
+
+
+# ---------------------------------------------------------------------------
+# Test: fetch_shot_frame_urls — Airtable frame attachment extraction (GH-53)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchShotFrameUrls:
+    """fetch_shot_frame_urls extracts URLs from Scene Start/End attachment fields."""
+
+    def test_function_exists(self):
+        """RED phase: function should exist in storyboard_handoff module."""
+        assert callable(fetch_shot_frame_urls)
+
+    def test_extracts_urls_from_scene_start_and_end(self):
+        """Should extract URLs from both Scene Start and Scene End attachment fields."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [
+                {
+                    "id": "att123",
+                    "url": "https://r2.example.com/captures/vid123/frame_00001.png",
+                    "filename": "frame_00001.png"
+                }
+            ],
+            "Scene End": [
+                {
+                    "id": "att456", 
+                    "url": "https://r2.example.com/captures/vid123/frame_00005.png",
+                    "filename": "frame_00005.png"
+                }
+            ]
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        
+        # Should preserve order: Scene Start first, Scene End second
+        assert result[0]["url"] == "https://r2.example.com/captures/vid123/frame_00001.png"
+        assert result[0]["role"] == "composition"
+        assert result[1]["url"] == "https://r2.example.com/captures/vid123/frame_00005.png"
+        assert result[1]["role"] == "composition"
+
+    def test_handles_missing_attachment_fields(self):
+        """Should return empty list when Scene Start/End fields are missing."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            # No Scene Start or Scene End fields
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert result == []
+
+    def test_handles_empty_attachment_arrays(self):
+        """Should return empty list when Scene Start/End are empty arrays."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [],
+            "Scene End": []
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert result == []
+
+    def test_handles_only_scene_start(self):
+        """Should work when only Scene Start has attachments."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [
+                {
+                    "id": "att123",
+                    "url": "https://r2.example.com/captures/vid123/frame_00001.png",
+                    "filename": "frame_00001.png"
+                }
+            ],
+            # Scene End missing
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert len(result) == 1
+        assert result[0]["url"] == "https://r2.example.com/captures/vid123/frame_00001.png"
+        assert result[0]["role"] == "composition"
+
+    def test_handles_only_scene_end(self):
+        """Should work when only Scene End has attachments."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            # Scene Start missing
+            "Scene End": [
+                {
+                    "id": "att456",
+                    "url": "https://r2.example.com/captures/vid123/frame_00005.png", 
+                    "filename": "frame_00005.png"
+                }
+            ]
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert len(result) == 1
+        assert result[0]["url"] == "https://r2.example.com/captures/vid123/frame_00005.png"
+        assert result[0]["role"] == "composition"
+
+    def test_handles_multiple_attachments_per_field(self):
+        """Should handle multiple attachments in a single field."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [
+                {
+                    "id": "att123",
+                    "url": "https://r2.example.com/captures/vid123/frame_00001.png",
+                    "filename": "frame_00001.png"
+                },
+                {
+                    "id": "att124",
+                    "url": "https://r2.example.com/captures/vid123/frame_00002.png",
+                    "filename": "frame_00002.png"
+                }
+            ],
+            "Scene End": [
+                {
+                    "id": "att456",
+                    "url": "https://r2.example.com/captures/vid123/frame_00005.png",
+                    "filename": "frame_00005.png"
+                }
+            ]
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert len(result) == 3
+        urls = [f["url"] for f in result]
+        assert "https://r2.example.com/captures/vid123/frame_00001.png" in urls
+        assert "https://r2.example.com/captures/vid123/frame_00002.png" in urls
+        assert "https://r2.example.com/captures/vid123/frame_00005.png" in urls
+
+    def test_ignores_attachments_without_url(self):
+        """Should skip attachment objects that lack a url field."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [
+                {
+                    "id": "att123",
+                    "url": "https://r2.example.com/captures/vid123/frame_00001.png",
+                    "filename": "frame_00001.png"
+                },
+                {
+                    "id": "att124",
+                    "filename": "frame_00002.png"
+                    # Missing url field
+                }
+            ],
+            "Scene End": []
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert len(result) == 1
+        assert result[0]["url"] == "https://r2.example.com/captures/vid123/frame_00001.png"
+
+    def test_preserves_scene_order(self):
+        """Scene Start attachments should come before Scene End attachments."""
+        
+        shot_fields = {
+            "Shot Label": "S03",
+            "Scene Start": [
+                {
+                    "id": "att_start",
+                    "url": "https://r2.example.com/captures/vid123/start.png",
+                    "filename": "start.png"
+                }
+            ],
+            "Scene End": [
+                {
+                    "id": "att_end",
+                    "url": "https://r2.example.com/captures/vid123/end.png",
+                    "filename": "end.png"
+                }
+            ]
+        }
+        
+        result = fetch_shot_frame_urls(shot_fields)
+        assert len(result) == 2
+        assert result[0]["url"] == "https://r2.example.com/captures/vid123/start.png"
+        assert result[1]["url"] == "https://r2.example.com/captures/vid123/end.png"
+
+
+# ---------------------------------------------------------------------------
+# Test: Integration with build_storyboard_series (GH-53)
+# ---------------------------------------------------------------------------
+
+
+class TestStoryboardSeriesWithFrameUrls:
+    """Integration test: build_storyboard_series with reference_frames_by_shot."""
+
+    def test_build_series_with_frame_urls(self):
+        """build_storyboard_series should pass frame URLs to payloads."""
+        shots = [CLEAN_SHOT, MINIMAL_SHOT]
+        
+        # Mock frame URLs for CLEAN_SHOT (S03) only
+        reference_frames_by_shot = {
+            "S03": [
+                {"url": "https://r2.example.com/frame1.png", "role": "composition"},
+                {"url": "https://r2.example.com/frame2.png", "role": "composition"},
+            ],
+            # MINIMAL_SHOT (S01) intentionally missing - should get empty list
+        }
+        
+        result = build_storyboard_series(
+            shots, 
+            reference_frames_by_shot=reference_frames_by_shot
+        )
+        
+        assert len(result) == 2
+        
+        # S03 should have reference frames
+        s03_payload = result[0]
+        assert s03_payload["metadata"]["shot_label"] == "S03"
+        assert len(s03_payload["reference_images"]) == 2
+        assert s03_payload["reference_images"][0]["url"] == "https://r2.example.com/frame1.png"
+        
+        # S01 should have empty reference frames
+        s01_payload = result[1]
+        assert s01_payload["metadata"]["shot_label"] == "S01"
+        assert s01_payload["reference_images"] == []
+
+    def test_build_series_without_frame_urls(self):
+        """build_storyboard_series should work without reference_frames_by_shot."""
+        shots = [CLEAN_SHOT, MINIMAL_SHOT]
+        
+        result = build_storyboard_series(shots)
+        
+        assert len(result) == 2
+        # Both shots should have empty reference images
+        assert all(payload["reference_images"] == [] for payload in result)

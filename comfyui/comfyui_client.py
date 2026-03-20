@@ -8,6 +8,7 @@ Handles:
 - Fetching /view to download generated images
 """
 
+import copy
 import json
 import time
 import requests
@@ -20,6 +21,9 @@ class ComfyUIClient:
 
     _ERROR_SNIPPET_LIMIT = 240
     _QUEUE_EXPECTED_NODES = ("8", "12")
+    _IPADAPTER_NODES = ("10", "12", "14")
+    _KSAMPLER_NODE = "1"
+    _BASE_MODEL_NODE = "3"
     
     def __init__(self, base_url: str = "http://127.0.0.1:8188", timeout: int = 300):
         """
@@ -98,11 +102,28 @@ class ComfyUIClient:
         workflow["6"]["inputs"]["width"] = width
         workflow["6"]["inputs"]["height"] = height
         workflow["8"]["inputs"]["filename_prefix"] = filename_prefix
-        if reference_image is not None and "12" in workflow:
+        if reference_image is None:
+            workflow = self._strip_ipadapter_nodes(workflow)
+        elif "12" in workflow:
             workflow["12"]["inputs"]["image"] = reference_image
             workflow["12"]["inputs"]["upload"] = "input"
         
         return workflow
+
+    @classmethod
+    def _strip_ipadapter_nodes(cls, workflow: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove IPAdapter path and rewire KSampler to base model.
+
+        When no reference image is available, the IPAdapter nodes (10, 12, 14)
+        cannot execute. This strips them and points the KSampler model input
+        directly at CheckpointLoaderSimple (node 3).
+        """
+        stripped = copy.deepcopy(workflow)
+        for node_id in cls._IPADAPTER_NODES:
+            stripped.pop(node_id, None)
+        if cls._KSAMPLER_NODE in stripped:
+            stripped[cls._KSAMPLER_NODE]["inputs"]["model"] = [cls._BASE_MODEL_NODE, 0]
+        return stripped
     
     def queue_prompt(self, workflow: Dict[str, Any]) -> str:
         """

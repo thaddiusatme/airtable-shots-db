@@ -789,3 +789,135 @@ class TestComfyUIClientGenerateImageStageContext:
         message = str(exc_info.value)
         assert "queue_prompt" in message
         assert "prompt queue failed" in message
+
+
+# ---------------------------------------------------------------------------
+# Test: ComfyUIClient IPAdapter dynamic stripping (GH-57)
+# ---------------------------------------------------------------------------
+
+
+def _full_workflow():
+    """Return a workflow dict matching Storyboarder_api.json node topology."""
+    return {
+        "1": {
+            "inputs": {
+                "seed": 0, "steps": 4, "cfg": 8,
+                "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+                "model": ["10", 0],
+                "positive": ["4", 0], "negative": ["5", 0],
+                "latent_image": ["6", 0],
+            },
+            "class_type": "KSampler",
+        },
+        "3": {"inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}, "class_type": "CheckpointLoaderSimple"},
+        "4": {"inputs": {"text": "", "clip": ["3", 1]}, "class_type": "CLIPTextEncode"},
+        "5": {"inputs": {"text": "", "clip": ["3", 1]}, "class_type": "CLIPTextEncode"},
+        "6": {"inputs": {"width": 1024, "height": 576, "batch_size": 1}, "class_type": "EmptyLatentImage"},
+        "7": {"inputs": {"samples": ["1", 0], "vae": ["3", 2]}, "class_type": "VAEDecode"},
+        "8": {"inputs": {"filename_prefix": "ComfyUI", "images": ["7", 0]}, "class_type": "SaveImage"},
+        "10": {
+            "inputs": {
+                "weight": 1, "start_at": 0, "end_at": 1, "weight_type": "standard",
+                "model": ["14", 0], "ipadapter": ["14", 1], "image": ["12", 0],
+            },
+            "class_type": "IPAdapter",
+        },
+        "12": {"inputs": {"image": "reference_montage.png", "upload": "input"}, "class_type": "LoadImage"},
+        "14": {"inputs": {"model": ["3", 0], "preset": "STANDARD (medium strength)"}, "class_type": "IPAdapterUnifiedLoader"},
+    }
+
+
+class TestIPAdapterDynamicStripping:
+    """GH-57: When no reference image, strip IPAdapter nodes and rewire KSampler."""
+
+    def test_strips_ipadapter_nodes_when_no_reference(self):
+        client = ComfyUIClient()
+        workflow = _full_workflow()
+
+        result = client.inject_prompt(
+            workflow,
+            positive_prompt="test",
+            negative_prompt="bad",
+            seed=42,
+            reference_image=None,
+        )
+
+        assert "10" not in result, "IPAdapter node should be removed"
+        assert "12" not in result, "LoadImage node should be removed"
+        assert "14" not in result, "IPAdapterUnifiedLoader node should be removed"
+
+    def test_rewires_ksampler_to_base_model_when_no_reference(self):
+        client = ComfyUIClient()
+        workflow = _full_workflow()
+
+        result = client.inject_prompt(
+            workflow,
+            positive_prompt="test",
+            negative_prompt="bad",
+            seed=42,
+            reference_image=None,
+        )
+
+        assert result["1"]["inputs"]["model"] == ["3", 0], (
+            "KSampler model input should point to CheckpointLoaderSimple (node 3)"
+        )
+
+    def test_preserves_ipadapter_nodes_with_reference(self):
+        client = ComfyUIClient()
+        workflow = _full_workflow()
+
+        result = client.inject_prompt(
+            workflow,
+            positive_prompt="test",
+            negative_prompt="bad",
+            seed=42,
+            reference_image="montage.png",
+        )
+
+        assert "10" in result, "IPAdapter node should be preserved"
+        assert "12" in result, "LoadImage node should be preserved"
+        assert "14" in result, "IPAdapterUnifiedLoader node should be preserved"
+        assert result["1"]["inputs"]["model"] == ["10", 0], (
+            "KSampler model input should still point to IPAdapter (node 10)"
+        )
+
+    def test_generate_image_succeeds_without_reference(self):
+        client = ComfyUIClient(base_url="http://127.0.0.1:8188")
+        workflow = _full_workflow()
+
+        history_entry = {
+            "status": {"completed": True, "status_str": "success"},
+            "outputs": {
+                "8": {
+                    "images": [{"filename": "test_00001_.png", "subfolder": "", "type": "output"}]
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "out.png"
+            mock_queue = MagicMock(return_value="prompt-abc")
+
+            with (
+                patch.object(client, "load_workflow", return_value=workflow),
+                patch.object(client, "queue_prompt", mock_queue),
+                patch.object(client, "poll_history", return_value=history_entry),
+                patch.object(client, "fetch_image", return_value=b"FAKE_PNG"),
+            ):
+                result = client.generate_image(
+                    workflow_path=Path("unused.json"),
+                    positive_prompt="pencil sketch",
+                    negative_prompt="bad",
+                    seed=42,
+                    output_path=output_path,
+                    reference_image_path=None,
+                )
+
+            assert result == output_path
+            assert output_path.read_bytes() == b"FAKE_PNG"
+            mock_queue.assert_called_once()
+            queued_workflow = mock_queue.call_args[0][0]
+            assert "10" not in queued_workflow
+            assert "12" not in queued_workflow
+            assert "14" not in queued_workflow
+            assert queued_workflow["1"]["inputs"]["model"] == ["3", 0]

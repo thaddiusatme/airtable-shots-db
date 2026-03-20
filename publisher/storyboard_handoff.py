@@ -131,13 +131,25 @@ def build_storyboard_payload(
         storyboard_negative, style, generation, reference_images,
         variants, metadata.
     """
+    # -- Strip fields that harm SDXL output --
+    # On-screen Text: SDXL cannot render legible text; causes garbled scribbles
+    # Frame Progression: temporal/sequential language → chaotic multi-panel output
+    # Recreation Guidance: instructional language, not visual description
+    # Production Patterns: narrative about filming technique, not visual style
+    _STRIP_FIELDS = (
+        "On-screen Text", "Frame Progression",
+        "Recreation Guidance", "Production Patterns",
+    )
+    filtered_fields = {k: v for k, v in shot_fields.items() if k not in _STRIP_FIELDS}
+
     # -- Base prompt from GH-32 assembler --
     selected_refs = select_reference_frames(reference_frames)
-    base = assemble_shot_image_prompt(shot_fields, reference_frames=selected_refs)
+    base = assemble_shot_image_prompt(filtered_fields, reference_frames=selected_refs)
 
-    # -- Storyboard positive = base positive + style tokens --
+    # -- Storyboard positive = style tokens FIRST, then scene description --
+    # CLIP gives more weight to earlier tokens; style must lead.
     style_tokens = STORYBOARD_STYLE_DEFAULTS["positive_style_tokens"]
-    storyboard_positive = f"{base['positive_prompt']}, {style_tokens}"
+    storyboard_positive = f"{style_tokens}, {base['positive_prompt']}"
 
     # -- Storyboard negative = base negative + style negative tokens --
     neg_tokens = STORYBOARD_STYLE_DEFAULTS["negative_style_tokens"]

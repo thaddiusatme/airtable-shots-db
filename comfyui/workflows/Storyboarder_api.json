@@ -1,14 +1,14 @@
 {
   "1": {
     "inputs": {
-      "seed": 964915788757405,
+      "seed": 159309201978722,
       "steps": 20,
       "cfg": 8,
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
       "model": [
-        "3",
+        "10",
         0
       ],
       "positive": [
@@ -40,7 +40,7 @@
   },
   "4": {
     "inputs": {
-      "text": "a pencil sketch of a dog",
+      "text": "",
       "clip": [
         "3",
         1
@@ -66,8 +66,8 @@
   },
   "6": {
     "inputs": {
-      "width": 1024,
-      "height": 576,
+      "width": 384,
+      "height": 216,
       "batch_size": 1
     },
     "class_type": "EmptyLatentImage",
@@ -102,6 +102,53 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "Save Image"
+    }
+  },
+  "10": {
+    "inputs": {
+      "weight": 1,
+      "start_at": 0,
+      "end_at": 1,
+      "weight_type": "standard",
+      "model": [
+        "14",
+        0
+      ],
+      "ipadapter": [
+        "14",
+        1
+      ],
+      "image": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "IPAdapter",
+    "_meta": {
+      "title": "IPAdapter"
+    }
+  },
+  "12": {
+    "inputs": {
+      "image": "reference_montage.png",
+      "upload": "input"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Reference Montage"
+    }
+  },
+  "14": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "preset": "STANDARD (medium strength)"
+    },
+    "class_type": "IPAdapterUnifiedLoader",
+    "_meta": {
+      "title": "IPAdapter Unified Loader"
     }
   }
 }

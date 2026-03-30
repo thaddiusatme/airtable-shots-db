@@ -1,8 +1,8 @@
 # YouTube Shot List Pipeline — Current State
 
-**Last Updated:** March 13, 2026  
-**Branch:** `fix/gh-38-structured-outputs-success-criteria`  
-**Status:** ✅ Frames Feature COMPLETE (GH-17, GH-18, GH-19) | ✅ Shot-Level LLM Enrichment COMPLETE (GH-23) | ✅ Model Tag Fix (GH-28) | ✅ One-Click Orchestrator Enrichment Wired (GH-30) | ✅ Structured Outputs + Success Criteria Fix (GH-38) | 🚧 Gemini enrichment provider + A/B analysis (GH-40) in progress | Pipeline Resumption Complete | Chrome Extension Integrated
+**Last Updated:** March 30, 2026
+**Branch:** `feature/gh-53-airtable-frame-ipadapter-wiring`
+**Status:** ✅ Frames (GH-17/18/19) | ✅ Shot LLM Enrichment (GH-23/28/30) | ✅ Structured Outputs (GH-38) | ✅ Gemini Provider (GH-40) | ✅ Image Prompt Assembler (GH-32) | ✅ Storyboard Generation (GH-33/51) | ✅ ComfyUI Queue Observability (GH-56) | ✅ Dynamic IPAdapter Stripping (GH-57) | ✅ Airtable Frame IPAdapter Wiring (GH-53)
 
 ---
 
@@ -15,6 +15,7 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 2. **Analyze** (Python/OpenCV/Ollama) → Scene boundaries + AI descriptions → analysis.json
 3. **Publish** (Python/pyairtable/boto3) → Airtable Videos + Shots + Frames with R2-hosted images + optional shot enrichment
 4. **Chrome Extension** → One-click pipeline trigger from YouTube page (via pipeline server at :3333), now routed through orchestrator-driven shot enrichment during publish
+5. **Storyboard Generation** (Python/ComfyUI) → Per-shot SDXL image prompts + pencil storyboard panel generation via ComfyUI IPAdapterAdvanced + R2 upload + Airtable attachment
 
 ---
 
@@ -128,6 +129,42 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 
 ---
 
+### Phase 5: Storyboard Generation (Python/ComfyUI)
+**Status:** Feature-complete on `feature/gh-53-airtable-frame-ipadapter-wiring`
+
+**GH-32: Image Prompt Assembler**
+- `publisher/prompt_assembler.py` — deterministic SDXL/ComfyUI per-shot prompt builder
+- Transforms enriched Airtable shot fields → structured prompt dict
+- Boilerplate/uninformative field filtering (v1.1 with narrative cleaner)
+- `ASSEMBLER_VERSION = "1.1"` tracks contract revision
+- `scripts/validate_prompt_assembler.py` for live spot-checks
+- 37 tests passing
+
+**GH-33/51: Storyboard Handoff + Generation Runner**
+- `publisher/storyboard_handoff.py` — thin wrapper adding pencil-only style, 16:9 defaults, A/B/C variant generation on top of GH-32 prompts
+- `publisher/storyboard_generator.py` — ComfyUI/SDXL runner consuming storyboard payloads; `make_comfyui_generate_fn()` for swappable backends; `--dry-run` mode outputs JSON
+- `publisher/storyboard_uploader.py` — R2 upload + Airtable attachment for generated storyboard images
+- `comfyui/comfyui_client.py` — ComfyUI REST API client (POST /prompt, poll /history, fetch /view)
+- `comfyui/workflows/Storyboarder_api.json` — API workflow with IPAdapterAdvanced conditioning
+- `comfyui/workflows/Storyboarder 4.json` — GUI workflow counterpart
+- Output layout: `{output_dir}/{video_id}/{shot_label}/{shot_label}_variant_{A|B|C}.png`
+- 45 storyboard generator tests + 59 storyboard handoff tests
+
+**GH-56: ComfyUI Queue Observability**
+- Polling diagnostics to surface job status, queue position, and ComfyUI error snippets during generation
+
+**GH-57: Dynamic IPAdapter Stripping**
+- Workflow strips IPAdapter nodes at runtime when no reference images are provided, allowing shots without Airtable frames to proceed without error
+
+**GH-53: Airtable Frame IPAdapter Wiring**
+- `fetch_shot_frame_urls()` in `publisher/storyboard_handoff.py` — extracts Scene Start/End frame URLs from Airtable attachment fields
+- Embeds as `reference_images` in storyboard payload for IPAdapter composition conditioning
+- Upgraded workflow to `IPAdapterAdvanced` with `IPAdapterModelLoader` node, `ip-adapter-plus_sdxl_vit-h.safetensors`
+- Live validated on video `8uP2IrP3IG8` shot `S03` — 2 frame URLs extracted, 3 variants generated with reference images
+- 11 new tests (9 unit + 2 integration)
+
+---
+
 ## 📊 Airtable Schema
 
 ### Videos Table
@@ -223,13 +260,28 @@ R2_PUBLIC_URL=https://pub-xxx.r2.dev
 
 ## 🧪 Test Coverage
 
-- **Enrichment-related coverage:** 148 tests
-  - `tests/test_shot_package.py` — 62
-  - `tests/test_publisher.py` — 37 enrichment/idempotency/observability/force-reenrich/prompt-version tests
-  - `tests/test_llm_enricher.py` — 27 adapter/pre-flight tests
-  - `tests/test_publisher_cli.py` — 11 CLI enrichment flag tests
-  - `tests/test_setup_airtable.py` — 11 schema/contract tests
-- **Total validated in-scope suite:** 261 tests passing
+- **Python test suite:** 539 tests
+  - `tests/test_publisher.py` — 114 (publish/enrichment/idempotency/observability)
+  - `tests/test_storyboard_handoff.py` — 59 (handoff contract + frame URL extraction)
+  - `tests/test_shot_package.py` — 85 (shot package assembly + prompt builder)
+  - `tests/test_storyboard_generator.py` — 45 (ComfyUI runner + dry-run)
+  - `tests/test_llm_enricher.py` — 41 (Ollama + Gemini adapters)
+  - `tests/test_prompt_assembler.py` — 37 (SDXL prompt assembly + filtering)
+  - `tests/test_r2_uploader.py` — 25 (R2 parallel uploads)
+  - `tests/test_publisher_cli.py` — 24 (CLI flags including Gemini routing)
+  - `tests/test_setup_airtable.py` — 19 (schema/contract tests)
+  - `tests/test_scene_detector.py` — 29
+  - `tests/test_frame_helpers.py` — 12
+  - `tests/test_transcript_segmenter.py` — 13
+  - `tests/test_scene_merger.py` — 8
+  - `tests/test_analyze_cli.py` — 8
+  - `tests/test_vlm_describer.py` — 20
+- **Node.js pipeline-server suite:** 51 tests
+  - `test_pipeline_state.js` — 15
+  - `test_resume_api.js` — 12
+  - `test_retry.js` — 20
+  - `test_orchestrator_enrichment_gating.js` — 4
+- **Total:** ~590 tests passing
 
 All tests use mocked external APIs (Ollama, Airtable, boto3/R2).  
 Pipeline state tests use `node:test` with temp directories (no external deps).  
@@ -254,7 +306,16 @@ airtable-shots-db/
 │   ├── publish.py          # Core publisher: Videos, Shots, Frames, enrichment
 │   ├── shot_package.py     # Shot package assembly + prompt + parser
 │   ├── r2_uploader.py      # R2 uploads: scene boundaries + all frames (parallel)
-│   └── frame_helpers.py    # parse_timestamp_from_filename() regex
+│   ├── frame_helpers.py    # parse_timestamp_from_filename() regex
+│   ├── prompt_assembler.py # GH-32: SDXL/ComfyUI per-shot image prompt builder
+│   ├── storyboard_handoff.py  # GH-33/53: pencil-style payload + fetch_shot_frame_urls()
+│   ├── storyboard_generator.py # GH-33/51: ComfyUI generation runner
+│   └── storyboard_uploader.py # GH-51: R2 + Airtable attachment for storyboard images
+├── comfyui/
+│   ├── comfyui_client.py   # ComfyUI REST API client (queue + poll + fetch)
+│   └── workflows/
+│       ├── Storyboarder_api.json  # API workflow (IPAdapterAdvanced)
+│       └── Storyboarder 4.json   # GUI workflow counterpart
 ├── tests/
 │   ├── test_analyze_cli.py
 │   ├── test_frame_helpers.py
@@ -316,19 +377,21 @@ airtable-shots-db/
 
 | Hash | Description |
 |---|---|
-| `6272445` | feat(GH-23): --force-reenrich flag + prompt-version-aware re-enrichment |
-| `0f6045b` | feat(GH-28): wire verify_model=True into CLI for fail-fast model check |
-| `aae72af` | fix(GH-28): change default model tag to llava:latest + pre-flight check |
-| `d89c759` | feat(GH-23): preserve shot enrichment across idempotent re-runs |
-| `45bc4f2` | feat(GH-23): add enrichment fields helper to `setup_airtable.py` |
-| `9c31802` | feat(GH-23): integrate shot enrichment into publisher |
-| `bb1aaf9` | feat(GH-23): add shot enrichment prompt payload builder |
-| `0719744` | feat(GH-23): add shot package assembly + LLM response parser |
-| `564fe7d` | fix(GH-18): correct attachment field type multipleAttachments (plural) |
-| `c359f18` | feat(GH-18): add_frames_table() — additive Frames table creation (TDD iteration 1) |
-| `7b6343d` | feat(GH-17): add parallel uploads and frame sampling (TDD iteration 4) |
-| `4504887` | feat(GH-17): integrate Frame records into publisher with idempotency + --skip-frames |
-| `238694a` | feat: add resume API endpoints and extension resume button |
+| `bc4ff30` | fix: update gitignore for storyboard outputs + upgrade IPAdapterAdvanced |
+| `4052d80` | Add lessons learned documentation for GH-53 iteration |
+| `1c9e67b` | Implement fetch_shot_frame_urls() for GH-53 Airtable frame IPAdapter wiring |
+| `3c7099a` | Fix storyboard quality: increase steps + simplify prompts |
+| `65fffe8` | docs: add lessons learned for GH-57 dynamic workflow stripping |
+| `3966ce8` | GH-57: dynamic IPAdapter stripping when no reference image |
+| `ce92e40` | GH-56: add ComfyUI prompt queue observability |
+| `4974550` | fix(gh-56): add comfyui polling observability diagnostics |
+| `8bbc37c` | Docs: ComfyUI autogen workflow + ignore storyboard outputs |
+| `5a3141b` | GH-51: ComfyUI storyboard generation + R2/Airtable integration |
+| `c24c9ec` | feat(GH-33): storyboard generation runner + validation script — TDD iteration 2 |
+| `33692e3` | GH-33: storyboard handoff contract — TDD iteration 1 |
+| `5ee24d3` | feat(GH-32): v1.1 live validation — uninformative narrative filter + empty section cleanup |
+| `201f8d2` | feat(GH-32): image prompt contract v1 — deterministic SDXL/ComfyUI per-shot prompt assembler |
+| `3d04ecb` | merge: bring pipeline UI-gated enrichment + provider selection onto master |
 
 ---
 
@@ -409,6 +472,15 @@ airtable-shots-db/
 - [ ] **Cost/rate limiting for enrichment** (token tracking + configurable rate limits)
 - [ ] **Prompt-size optimization / batching** (large shot packages with many frames)
 - [ ] **Web UI** for shot list review/editing
+- [x] **Image prompt assembler** (GH-32) — deterministic SDXL prompts from enriched shots
+- [x] **Storyboard generation** (GH-33/51) — ComfyUI pencil panel generation, R2 upload, Airtable attachment
+- [x] **ComfyUI queue observability** (GH-56) — polling diagnostics + error surfacing
+- [x] **Dynamic IPAdapter stripping** (GH-57) — graceful degradation when no reference images
+- [x] **Airtable frame IPAdapter wiring** (GH-53) — fetch_shot_frame_urls() + IPAdapterAdvanced upgrade
+- [ ] **Retry/backoff for Gemini 429 responses** (GH-40 follow-up)
+- [ ] **Gemini vs qwen2.5vl:7b benchmark** (10+ shots, latency/field coverage/cost comparison)
+- [ ] **Full extension-driven end-to-end with provider=gemini**
+- [ ] **Real ComfyUI storyboard generation end-to-end** (--no-dry-run with live ComfyUI service)
 
 ### P3 — Production Readiness
 - [ ] **CI/CD pipeline** (GitHub Actions for tests)

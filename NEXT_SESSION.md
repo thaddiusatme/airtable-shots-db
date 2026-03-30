@@ -1,64 +1,39 @@
 # Next Session
 
-## Tonight's Wrap-Up (March 13, 2026)
+## Session Wrap-Up (March 30, 2026)
 
-- **Issue #40 implementation progressed** on branch `fix/pipeline-ui-gated-enrichment`
-- Added Gemini enrichment provider wiring to `publisher/llm_enricher.py`, `publisher/cli.py`, and `scripts/ab_enrichment_test.py`
-- Confirmed `gemini-2.0-flash` is not available for this project key; working replacements are `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and `gemini-3.1-flash-lite-preview`
-- Live Gemini validation on `U_cDKkDvPAQ`:
-  - `gemini-2.5-flash`
-  - 4/4 valid JSON
-  - 13.0/13 field coverage
-  - ~6.2s average latency
-- Added A/B harness logging for:
-  - per-shot elapsed time
-  - prompt/output/total tokens
-  - estimated Gemini cost
-  - total runtime per model
-- Focused adapter tests: `41/41` passing in `tests/test_llm_enricher.py`
+- Triage session: audited 136 dirty git files, resolved all noise
+- Fixed `core.fileMode false` to stop tracking macOS permission drifts
+- Updated `.gitignore`: added `storyboard_output_*/` and `gh[0-9]*.txt` patterns
+- Committed IPAdapterAdvanced upgrade + Storyboarder 4.json (GUI workflow)
+- Updated CURRENT_STATE.md to reflect GH-32/33/51/53/56/57 work
+- Total test count: ~590 (539 Python + 51 Node.js)
 
-## What We Built This Session
+## Current Branch
 
-**Issue #40: Gemini enrichment provider + A/B analysis**
-- `publisher/llm_enricher.py`
-  - added Gemini REST adapter
-  - added Gemini usage metadata capture on `enrich_fn.last_usage`
-  - added estimated cost calculation for supported Gemini models
-- `publisher/cli.py`
-  - added Gemini provider wiring and auth flags
-- `scripts/ab_enrichment_test.py`
-  - added provider-qualified model support
-  - added token/cost/runtime reporting
-- `tests/test_llm_enricher.py`
-  - added Gemini adapter payload/response tests
-  - added Gemini usage metadata test
-- `tests/test_publisher_cli.py`
-  - added Gemini CLI routing coverage
-- `chrome-extension/popup.html` + `chrome-extension/popup.js`
-  - added provider selector UI for `ollama` vs `gemini`
-  - default model now tracks the selected provider
-- `pipeline-server/server.js` + `pipeline-server/orchestrator.js`
-  - pass `enrichProvider` through extension → server → publisher CLI
-- `pipeline-server/test/test_orchestrator_enrichment_gating.js`
-  - added regression coverage for `--enrich-provider` and Gemini publish status text
+`feature/gh-53-airtable-frame-ipadapter-wiring`
 
-## First Thing To Do Next
+All GH-53 work is complete. This branch likely needs a PR and merge to main (or whatever integration branch is being used).
 
-1. **Post and/or close GitHub Issue #40 update**
-   - document that the working model is `gemini-2.5-flash`, not `gemini-2.0-flash`
-   - include the 4-shot live validation metrics
-   - mention token/cost/runtime logging landed in the A/B harness
+## First Things Next Session
 
-2. **Decide whether to rename docs/examples away from `gemini-2.0-flash`**
-   - current project reality points to `gemini-2.5-flash` as the default example
+1. **Post GH-40 update** (from March 13 to-do, still outstanding)
+   - Document that `gemini-2.5-flash` (not `gemini-2.0-flash`) is the working model
+   - Include 4-shot live validation metrics (4/4 JSON, 13/13 fields, ~6.2s latency)
+   - Mention token/cost/runtime logging in the A/B harness
 
-3. **Run a broader side-by-side benchmark**
-   - compare `gemini-2.5-flash` vs `qwen2.5vl:7b` on 10+ shots
-   - capture latency, field coverage, token totals, and estimated cost
+2. **Merge / PR for GH-53 branch**
+   - Branch `feature/gh-53-airtable-frame-ipadapter-wiring` is complete
+   - Verify tests still pass after today's gitignore + workflow commits
+
+3. **Run a real ComfyUI end-to-end storyboard generation**
+   - Use `--no-dry-run` flag with live ComfyUI service running
+   - Target: video `8uP2IrP3IG8` shot `S03` (already validated frame URL extraction)
+   - Verify IPAdapterAdvanced conditioning works with the new workflow
 
 ## Nice Follow-Ups
 
-- Add retry/backoff for transient Gemini `429` responses
-- Export token and cost totals into the harness JSON output schema explicitly
-- Run a full extension-driven end-to-end pipeline with `provider=gemini`
-- Persist aggregate token/cost totals into the A/B harness JSON output
+- Retry/backoff for transient Gemini `429` responses
+- Benchmark `gemini-2.5-flash` vs `qwen2.5vl:7b` on 10+ shots
+- Full extension-driven end-to-end pipeline with `provider=gemini`
+- Persist aggregate token/cost totals in A/B harness JSON output

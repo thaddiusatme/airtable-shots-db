@@ -132,36 +132,35 @@ Four-component pipeline for extracting, analyzing, and publishing YouTube video 
 ### Phase 5: Storyboard Generation (Python/ComfyUI)
 **Status:** Feature-complete on `feature/gh-53-airtable-frame-ipadapter-wiring`
 
-**GH-32: Image Prompt Assembler**
-- `publisher/prompt_assembler.py` — deterministic SDXL/ComfyUI per-shot prompt builder
-- Transforms enriched Airtable shot fields → structured prompt dict
-- Boilerplate/uninformative field filtering (v1.1 with narrative cleaner)
-- `ASSEMBLER_VERSION = "1.1"` tracks contract revision
-- `scripts/validate_prompt_assembler.py` for live spot-checks
-- 37 tests passing
+**GH-32: Image Prompt Assembler**  
+**Description:** Implemented a deterministic prompt assembler that converts enriched Airtable shot fields into structured SDXL/ComfyUI-compatible prompt dictionaries for automated storyboard image generation.  
+**Primary Files/Components:** `publisher/prompt_assembler.py`, `scripts/validate_prompt_assembler.py`  
+**User-Facing/Operational Impact:** Enables automated creation of high-quality storyboard panels from shot descriptions, eliminating manual prompt engineering and improving visual storytelling consistency.  
+**Reference:** [GH-32](https://github.com/thaddiusatme/airtable-shots-db/issues/32)
 
-**GH-33/51: Storyboard Handoff + Generation Runner**
-- `publisher/storyboard_handoff.py` — thin wrapper adding pencil-only style, 16:9 defaults, A/B/C variant generation on top of GH-32 prompts
-- `publisher/storyboard_generator.py` — ComfyUI/SDXL runner consuming storyboard payloads; `make_comfyui_generate_fn()` for swappable backends; `--dry-run` mode outputs JSON
-- `publisher/storyboard_uploader.py` — R2 upload + Airtable attachment for generated storyboard images
-- `comfyui/comfyui_client.py` — ComfyUI REST API client (POST /prompt, poll /history, fetch /view)
-- `comfyui/workflows/Storyboarder_api.json` — API workflow with IPAdapterAdvanced conditioning
-- `comfyui/workflows/Storyboarder 4.json` — GUI workflow counterpart
-- Output layout: `{output_dir}/{video_id}/{shot_label}/{shot_label}_variant_{A|B|C}.png`
-- 45 storyboard generator tests + 59 storyboard handoff tests
+**GH-33/51: Storyboard Generation**  
+**Description:** Built end-to-end storyboard generation pipeline using ComfyUI to create pencil-style SDXL panels from assembled prompts, with R2 upload and Airtable attachment integration.  
+**Primary Files/Components:** `publisher/storyboard_handoff.py`, `publisher/storyboard_generator.py`, `publisher/storyboard_uploader.py`, `comfyui/comfyui_client.py`, `comfyui/workflows/Storyboarder_api.json`  
+**User-Facing/Operational Impact:** Users can generate visual storyboards directly from video analysis, enhancing project planning and presentation with automated visual assets.  
+**Reference:** [GH-33](https://github.com/thaddiusatme/airtable-shots-db/issues/33) / [GH-51](https://github.com/thaddiusatme/airtable-shots-db/issues/51)
 
-**GH-56: ComfyUI Queue Observability**
-- Polling diagnostics to surface job status, queue position, and ComfyUI error snippets during generation
+**GH-56: ComfyUI Queue Observability**  
+**Description:** Added polling diagnostics and error surfacing for ComfyUI job status, queue position, and generation failures during storyboard creation.  
+**Primary Files/Components:** `comfyui/comfyui_client.py`, `publisher/storyboard_generator.py`  
+**User-Facing/Operational Impact:** Operators gain real-time visibility into generation progress and can quickly diagnose issues, improving reliability and reducing downtime in storyboard workflows.  
+**Reference:** [GH-56](https://github.com/thaddiusatme/airtable-shots-db/issues/56)
 
-**GH-57: Dynamic IPAdapter Stripping**
-- Workflow strips IPAdapter nodes at runtime when no reference images are provided, allowing shots without Airtable frames to proceed without error
+**GH-57: Dynamic IPAdapter Stripping**  
+**Description:** Implemented runtime stripping of IPAdapter workflow nodes when no reference images are provided, enabling graceful degradation for shots without frame attachments.  
+**Primary Files/Components:** `comfyui/workflows/Storyboarder_api.json`, `publisher/storyboard_generator.py`  
+**User-Facing/Operational Impact:** Ensures storyboard generation succeeds for all shots regardless of frame availability, preventing workflow failures and maintaining consistent output.  
+**Reference:** [GH-57](https://github.com/thaddiusatme/airtable-shots-db/issues/57)
 
-**GH-53: Airtable Frame IPAdapter Wiring**
-- `fetch_shot_frame_urls()` in `publisher/storyboard_handoff.py` — extracts Scene Start/End frame URLs from Airtable attachment fields
-- Embeds as `reference_images` in storyboard payload for IPAdapter composition conditioning
-- Upgraded workflow to `IPAdapterAdvanced` with `IPAdapterModelLoader` node, `ip-adapter-plus_sdxl_vit-h.safetensors`
-- Live validated on video `8uP2IrP3IG8` shot `S03` — 2 frame URLs extracted, 3 variants generated with reference images
-- 11 new tests (9 unit + 2 integration)
+**GH-53: Airtable Frame IPAdapter Wiring**  
+**Description:** Integrated Airtable frame URLs into ComfyUI IPAdapter conditioning, upgrading to IPAdapterAdvanced for reference-image based storyboard generation.  
+**Primary Files/Components:** `publisher/storyboard_handoff.py` (`fetch_shot_frame_urls()`), `comfyui/workflows/Storyboarder_api.json` (IPAdapterAdvanced upgrade)  
+**User-Facing/Operational Impact:** Storyboard panels now incorporate actual video frames for more accurate and contextually relevant visual representations.  
+**Reference:** [GH-53](https://github.com/thaddiusatme/airtable-shots-db/issues/53)
 
 ---
 

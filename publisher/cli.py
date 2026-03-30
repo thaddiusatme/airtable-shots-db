@@ -113,6 +113,55 @@ def main(argv: list[str] | None = None) -> int:
         default=5.0,
         help="Minimum scene duration in seconds when --merge-scenes is used (default: 5.0).",
     )
+    parser.add_argument(
+        "--enrich-shots",
+        action="store_true",
+        default=False,
+        help="Run LLM enrichment on each shot after creation.",
+    )
+    parser.add_argument(
+        "--enrich-provider",
+        default="ollama",
+        help="LLM provider for enrichment (default: ollama).",
+    )
+    parser.add_argument(
+        "--enrich-model",
+        default="llava:latest",
+        help="Model name for enrichment (stored in AI Model field, default: llava:latest).",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        default="http://localhost:11434/api/generate",
+        help="Ollama API generate endpoint URL (default: http://localhost:11434/api/generate).",
+    )
+    parser.add_argument(
+        "--ollama-timeout",
+        type=int,
+        default=600,
+        help="Ollama HTTP request timeout in seconds (default: 600).",
+    )
+    parser.add_argument(
+        "--gemini-api-key",
+        default=os.environ.get("GEMINI_API_KEY", ""),
+        help="Gemini API key (or set GEMINI_API_KEY env var).",
+    )
+    parser.add_argument(
+        "--gemini-api-url",
+        default="https://generativelanguage.googleapis.com/v1beta",
+        help="Gemini API base URL (default: https://generativelanguage.googleapis.com/v1beta).",
+    )
+    parser.add_argument(
+        "--max-enrich-frames",
+        type=int,
+        default=None,
+        help="Max frames to send per shot for enrichment (default: all). Caps image payload size.",
+    )
+    parser.add_argument(
+        "--force-reenrich",
+        action="store_true",
+        default=False,
+        help="Re-enrich all shots regardless of existing enrichment state.",
+    )
     args = parser.parse_args(argv)
 
     configure_logging(verbose=args.verbose)
@@ -138,6 +187,54 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.info("R2 credentials not set — skipping image uploads")
 
+    enrich_fn = None
+    if args.enrich_shots:
+        if args.enrich_provider == "ollama":
+            from publisher.llm_enricher import make_ollama_enrich_fn
+
+            try:
+                enrich_fn = make_ollama_enrich_fn(
+                    capture_dir=args.capture_dir,
+                    ollama_url=args.ollama_url,
+                    model=args.enrich_model,
+                    timeout=args.ollama_timeout,
+                    max_frames=args.max_enrich_frames,
+                    verify_model=True,
+                )
+            except RuntimeError as e:
+                logger.error("Model verification failed: %s", e)
+                return 1
+            logger.info(
+                "Enrichment enabled (provider=%s, model=%s, url=%s)",
+                args.enrich_provider,
+                args.enrich_model,
+                args.ollama_url,
+            )
+        elif args.enrich_provider == "gemini":
+            from publisher.llm_enricher import make_gemini_enrich_fn
+
+            try:
+                enrich_fn = make_gemini_enrich_fn(
+                    capture_dir=args.capture_dir,
+                    api_key=args.gemini_api_key,
+                    model=args.enrich_model,
+                    timeout=args.ollama_timeout,
+                    max_frames=args.max_enrich_frames,
+                    api_url=args.gemini_api_url,
+                )
+            except RuntimeError as e:
+                logger.error("Gemini configuration failed: %s", e)
+                return 1
+            logger.info(
+                "Enrichment enabled (provider=%s, model=%s, url=%s)",
+                args.enrich_provider,
+                args.enrich_model,
+                args.gemini_api_url,
+            )
+        else:
+            logger.error("Unsupported enrichment provider: %s", args.enrich_provider)
+            return 1
+
     try:
         result = publish_to_airtable(
             capture_dir=args.capture_dir,
@@ -151,6 +248,10 @@ def main(argv: list[str] | None = None) -> int:
             skip_frames=args.skip_frames,
             max_workers=args.max_concurrent_uploads,
             frame_sample_rate=args.frame_sampling,
+            enrich_shots=args.enrich_shots,
+            enrich_fn=enrich_fn,
+            enrich_model=args.enrich_model,
+            force_reenrich=args.force_reenrich,
         )
     except FileNotFoundError as e:
         logger.error("Error: %s", e)

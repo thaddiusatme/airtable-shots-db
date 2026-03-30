@@ -157,6 +157,61 @@ async function upsertVideoTranscript(job) {
   }
 }
 
+function getPublishMode(job) {
+  const enrichShots = !!job.input.enrichShots;
+  const enrichProvider = job.input.enrichProvider || process.env.ENRICH_PROVIDER || 'ollama';
+  const defaultModel = enrichProvider === 'gemini'
+    ? 'gemini-2.5-flash'
+    : process.env.ENRICH_MODEL || 'qwen2.5-vl:latest';
+  const enrichModel = job.input.enrichModel || defaultModel;
+  const forceReenrich = enrichShots && !!job.input.forceReenrich;
+  return { enrichShots, enrichProvider, enrichModel, forceReenrich };
+}
+
+function buildPublishStatusMessage(hasR2, publishMode) {
+  const destination = hasR2
+    ? 'shots + frames to Airtable + R2'
+    : 'shots to Airtable';
+
+  if (!publishMode.enrichShots) {
+    return `Publishing ${destination}...`;
+  }
+
+  const suffix = publishMode.forceReenrich
+    ? ` with AI enrichment (${publishMode.enrichProvider}/${publishMode.enrichModel}, force re-enrich)`
+    : ` with AI enrichment (${publishMode.enrichProvider}/${publishMode.enrichModel})`;
+  return `Publishing ${destination}${suffix}...`;
+}
+
+function buildPublisherArgs(captureDir, hasR2, publishMode) {
+  const publisherArgs = [
+    '-m', 'publisher',
+    '--capture-dir', captureDir,
+    '--api-key', process.env.AIRTABLE_API_KEY,
+    '--base-id', process.env.AIRTABLE_BASE_ID,
+    '--segment-transcripts',
+    '--merge-scenes',
+    '--verbose',
+  ];
+
+  if (hasR2) {
+    publisherArgs.push('--max-concurrent-uploads', '8');
+  }
+
+  if (publishMode.enrichShots) {
+    publisherArgs.push(
+      '--enrich-shots',
+      '--enrich-provider', publishMode.enrichProvider,
+      '--enrich-model', publishMode.enrichModel,
+    );
+    if (publishMode.forceReenrich) {
+      publisherArgs.push('--force-reenrich');
+    }
+  }
+
+  return publisherArgs;
+}
+
 /**
  * Run the full pipeline:
  *   1. Upsert Video transcript in Airtable
@@ -357,9 +412,8 @@ async function runPipeline(job, updateStatus) {
     if (!job.completedSteps.includes('publish')) job.completedSteps.push('publish');
   } else {
     const hasR2 = process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID;
-    const statusMsg = hasR2 
-      ? 'Publishing shots + frames to Airtable + R2...' 
-      : 'Publishing shots to Airtable...';
+    const publishMode = getPublishMode(job);
+    const statusMsg = buildPublishStatusMessage(hasR2, publishMode);
     updateStatus('running', statusMsg, 'publish');
 
     state.stepStates.publish.status = 'running';
@@ -367,20 +421,8 @@ async function runPipeline(job, updateStatus) {
     savePipelineState(stateFile, state);
 
     try {
-      const publisherArgs = [
-        '-m', 'publisher',
-        '--capture-dir', captureDir,
-        '--api-key', process.env.AIRTABLE_API_KEY,
-        '--base-id', process.env.AIRTABLE_BASE_ID,
-        '--segment-transcripts',
-        '--merge-scenes',
-        '--verbose',
-      ];
-
-      // Enable parallel frame uploads if R2 is configured
-      if (hasR2) {
-        publisherArgs.push('--max-concurrent-uploads', '8');
-      }
+      const publisherArgs = buildPublisherArgs(captureDir, hasR2, publishMode);
+      console.log(`[orchestrator] Publish mode: ${JSON.stringify(publishMode)}`);
 
       await runCommand(pythonBin, publisherArgs, {
         cwd: PROJECT_ROOT,

@@ -1,0 +1,301 @@
+# GitHub Issue: Shot-Level LLM Enrichment Pipeline
+
+**Title:** Implement Shot-Level LLM Enrichment for Airtable Shot Records  
+**Labels:** `enhancement`, `enrichment`, `llm`, `publisher`, `airtable`  
+**Priority:** P1 — Core Implemented, Production Wiring Pending  
+**Branches:** `feature/shot-package-llm-enrichment`, `feature/airtable-shot-enrichment-schema`, `feature/airtable-shot-enrichment-idempotency`
+
+---
+
+## Status Summary
+
+The core GH-23 enrichment architecture is implemented and test-covered:
+
+- shot package assembly
+- prompt payload generation
+- publisher integration
+- schema alignment for the 4 new multiline enrichment fields
+- idempotent re-run behavior that preserves old enrichment
+- live Ollama adapter + CLI wiring for enrichment
+- runtime observability for per-shot enrichment progress and failures
+
+A fresh live validation confirmed the parser/write path works end-to-end with Ollama for completed shots (`S01` through `S10` in the latest run), and GH-27 added per-shot logging / timeout surfacing so later stalls become diagnosable instead of appearing frozen.
+
+The main follow-up work is now production hardening:
+
+- re-run the stalled capture with new observability to diagnose the late-shot runtime issue
+- optional force re-enrichment / prompt-version-aware re-enrichment
+- structured telemetry / richer runtime diagnostics
+
+---
+
+## Problem Statement
+
+Shot records in Airtable contain structural metadata (timestamps, labels, scene boundaries) but lack **descriptive analysis** of what each shot contains — camera work, lighting, subject, function, and how to recreate it.
+
+This metadata is essential for:
+- Searching and filtering shots by visual characteristics
+- Understanding production patterns across videos
+- Providing recreation guidance for content production
+
+Manually annotating shots is impractical at scale. An LLM can analyze frame images and transcript context to generate structured shot descriptions automatically.
+
+---
+
+## Solution
+
+Add an **opt-in LLM enrichment pipeline** to the publisher that:
+
+1. Packages each shot's frames, transcript, and metadata into a structured prompt
+2. Calls an injected LLM function to generate structured JSON analysis
+3. Parses the response into 13 Airtable-ready fields
+4. Writes enrichment fields + AI metadata to each Shot record
+5. Skips already-enriched shots on re-run (idempotent)
+6. Isolates failures per-shot (one failure doesn't block others)
+
+---
+
+## Airtable Enrichment Fields
+
+### LLM Output Fields (13)
+
+| Airtable Column | LLM Key | Schema Note | Description |
+|---|---|---|---|
+| AI Description (Local) | `scene_summary` | Existing field | Brief description of the shot |
+| How It Is Shot | `how_it_is_shot` | Added by GH-23 helper (`multilineText`) | Camera technique narrative |
+| Shot Type | `shot_type` | Existing field in `Shots` schema | e.g., Medium Shot, Close-Up |
+| Camera Angle | `camera_angle` | Existing field in `Shots` schema | e.g., Eye Level, High Angle |
+| Movement | `movement` | Existing field in `Shots` schema | e.g., Static, Pan, Dolly |
+| Lighting | `lighting` | Existing field in `Shots` schema | e.g., Studio, Natural |
+| Setting | `setting` | Existing field in `Shots` schema | e.g., Home studio, Outdoors |
+| Subject | `subject` | Existing field in `Shots` schema | e.g., Speaker, Product |
+| On-screen Text | `on_screen_text` | Existing field in `Shots` schema | Visible text in frames |
+| Shot Function | `shot_function` | Existing field in `Shots` schema | e.g., Introduction, B-Roll |
+| Frame Progression | `frame_progression` | Added by GH-23 helper (`multilineText`) | How frames evolve over time |
+| Production Patterns | `production_patterns` | Added by GH-23 helper (`multilineText`) | Repeatable production techniques |
+| Recreation Guidance | `recreation_guidance` | Added by GH-23 helper (`multilineText`) | How to recreate this shot |
+
+### AI Metadata Fields (4)
+
+| Airtable Column | Populated By | Purpose |
+|---|---|---|
+| AI Prompt Version | Publisher | Tracks prompt template revision (currently `"1.0"`) |
+| AI Updated At | Publisher | ISO 8601 timestamp of last enrichment |
+| AI Model | Publisher | LLM model identifier (e.g., `gpt-4o`) |
+| AI Error | Publisher | Error message if enrichment failed |
+
+---
+
+## Implementation — Completed Slices
+
+### Slice 1: Shot Package Contract 
+**Commit:** `0719744` | **Branch:** `feature/shot-package-llm-enrichment`
+
+- `publisher/shot_package.py` — new module
+- `collect_shot_frames()` — gather frames for a shot in stable order
+- `build_shot_package()` — assemble scene + frames + transcript for LLM
+- `parse_llm_response()` — map structured LLM JSON → Airtable fields
+- `SHOT_ENRICHMENT_FIELDS` — explicit LLM key → Airtable column mapping
+- 41 new tests in `tests/test_shot_package.py`
+
+### Slice 2: Prompt Payload Builder 
+**Commit:** `bb1aaf9` | **Branch:** `feature/shot-package-llm-enrichment`
+
+- `AI_PROMPT_VERSION = "1.0"` constant
+- `build_enrichment_prompt(shot_package)` → `{system_prompt, user_prompt, frame_references, prompt_version}`
+- API-agnostic prompt dict (no OpenAI/Anthropic coupling)
+- System prompt instructs JSON output with all 13 enrichment keys
+- Handles empty frames/transcript edge cases
+- 21 new tests in `TestBuildEnrichmentPrompt`
+
+### Slice 3: Publisher Integration 
+**Commit:** `9c31802` | **Branch:** `feature/shot-package-llm-enrichment`
+
+- `publish_to_airtable()` gains `enrich_shots`, `enrich_fn`, `enrich_model` params
+- Per-shot enrichment loop after shot creation
+- Dependency-injected `enrich_fn` callable (no hardcoded LLM client)
+- Per-shot error isolation — failures write `AI Error`, don't block other shots
+- `shots_enriched` count in return summary
+- 10 new tests in `TestEnrichmentIntegration`
+
+### Slice 4: Airtable Schema Alignment 
+**Commit:** `45bc4f2` | **Branch:** `feature/airtable-shot-enrichment-schema`
+
+- `ENRICHMENT_FIELD_DEFINITIONS` constant in `setup_airtable.py`
+- `add_enrichment_fields(base_id)` — adds the 4 new GH-23 multiline fields that were not already present in the base:
+  - How It Is Shot, Frame Progression, Production Patterns, Recreation Guidance
+- Field-level idempotency (skips fields that already exist)
+- `--add-enrichment-fields` CLI flag
+- Contract tests verifying all enrichment fields are provisioned
+- 11 new tests in `test_setup_airtable.py`
+
+### Slice 5: Idempotent Re-run 
+**Commit:** `d89c759` | **Branch:** `feature/airtable-shot-enrichment-idempotency`
+
+- `is_shot_enriched(fields)` — pure helper; returns True if `AI Prompt Version` is truthy
+- Read old shot records before deletion to capture enrichment state
+- `old_enrichment_by_label` mapping (Shot Label → fields dict)
+- Enriched shots: old fields copied to new records, LLM call skipped
+- AI Error-only shots (no AI Prompt Version): eligible for retry
+- `shots_skipped_enrichment` count in return summary
+- 8 integration + 6 unit tests (14 new)
+
+### Slice 6: Live Ollama Adapter + CLI Wiring 
+**Commit:** `78d07a2` | **Branch:** `feature/llm-enrichment-live-demo-wiring`
+
+- `publisher/llm_enricher.py` — `make_ollama_enrich_fn()` adapter for Ollama `/api/generate`
+- `publisher/cli.py` exposes `--enrich-shots`, `--enrich-provider`, `--enrich-model`, `--ollama-url`, `--ollama-timeout`, `--max-enrich-frames`
+- Frame references are base64-encoded and sent as Ollama `images`
+- Adapter remains behind injected `enrich_fn` boundary
+- 25 new tests across `tests/test_llm_enricher.py` and `tests/test_publisher_cli.py`
+
+### Slice 7: Runtime Observability / Stall Hardening 
+**Commit:** `d719522` | **Branch:** `fix/gh-27-enrichment-stall-observability`
+
+- Pre-request log with shot label and progress counter before each LLM request
+- Per-shot elapsed time logging after success or failure
+- Failure logs include shot label, progress position, and elapsed time
+- `AI Error` now includes the shot label for Airtable-side triage
+- Ollama adapter error messages now include the active model name
+- 8 new tests (6 observability + 2 adapter error-context tests)
+
+### Slice 8: Model Tag Fix + Pre-flight Check (GH-28) 
+**Commits:** `aae72af`, `0f6045b` | **Branch:** `fix/gh-28-ollama-model-tag-mismatch`
+
+- CLI default `--enrich-model` changed from `llava:7b` to `llava:latest`
+- `verify_ollama_model(model, ollama_url)` — pre-flight `GET /api/tags` check
+- `verify_model=True` wired into CLI when `--enrich-shots` is set — fails fast with `rc=1` before publish loop
+- Clear error message: lists the bad model name + all available models
+- 10 new tests (7 pre-flight, 1 default model, 2 CLI verify wiring)
+
+### Slice 9: Force Re-enrichment + Prompt-Version-Aware Re-enrichment (GH-23)
+**Commit:** `6272445` | **Branch:** `fix/gh-28-ollama-model-tag-mismatch`
+
+- `force_reenrich=True` param on `publish_to_airtable()` — bypasses `is_shot_enriched()` skip logic
+- `--force-reenrich` CLI flag wired through
+- Prompt-version-aware re-enrichment: compares old `AI Prompt Version` against current `AI_PROMPT_VERSION`; stale shots are automatically re-enriched
+- Shots with the current prompt version are still skipped (preserving idempotency)
+- 7 new tests (3 force-reenrich, 3 prompt-version, 1 CLI flag)
+
+---
+
+## Test Coverage
+
+| Test File | Enrichment Tests | Total |
+|---|---|---|
+| `tests/test_shot_package.py` | 62 | 62 |
+| `tests/test_publisher.py` | 37 (10 integration + 8 idempotency + 6 observability + 6 unit + 3 force-reenrich + 3 prompt-version + 1 summary) | 109 |
+| `tests/test_llm_enricher.py` | 27 (+7 pre-flight) | 27 |
+| `tests/test_publisher_cli.py` | 11 (+3 model verify/default + 1 force-reenrich) | 22 |
+| `tests/test_setup_airtable.py` | 11 (schema + contract) | 19 |
+| **Total enrichment-related** | **148** | |
+| **Current validated in-scope suite** | | **261** |
+
+---
+
+## Architecture
+
+```
+publish_to_airtable(enrich_shots=True, enrich_fn=my_llm_fn)
+  │
+  ├─ Read old shot records (if existing video)
+  │   └─ Build old_enrichment_by_label mapping
+  │
+  ├─ Delete old shots → Create new shots
+  │
+  └─ Enrichment loop (per shot):
+      │
+      ├─ is_shot_enriched(old_fields)?
+      │   ├─ YES → Copy old fields to new record, skip LLM
+      │   └─ NO  → Continue to LLM enrichment
+      │
+      ├─ collect_shot_frames(scene, manifest)
+      ├─ build_shot_package(scene, frames, transcript, video_id)
+      ├─ build_enrichment_prompt(package)
+      ├─ enrich_fn(prompt)  ← injected callable
+      ├─ parse_llm_response(raw_response)
+      └─ shots_table.update(record_id, fields)
+```
+
+### Key Design Decisions
+
+- **Dependency injection** — `enrich_fn` callable, not a hardcoded LLM client
+- **Opt-in** — `enrich_shots=False` by default; existing publish flows unaffected
+- **Per-shot isolation** — one failed enrichment doesn't block others
+- **Whitelist field copying** — only enrichment fields preserved on re-run
+- **AI Prompt Version as enrichment signal** — single-field check, clean contract
+
+---
+
+## CLI Usage
+
+The schema helper is available from the command line today. The publisher enrichment path is currently available through `publish_to_airtable()` parameters, but a production-ready CLI LLM adapter is still pending.
+
+```bash
+# Add missing enrichment fields to Airtable schema
+AIRTABLE_BASE_ID="$AIRTABLE_BASE_ID" \
+.venv/bin/python setup_airtable.py --add-enrichment-fields
+```
+
+---
+
+## Remaining Work
+
+### Not Yet Implemented
+
+- [x] **`--force-reenrich` CLI flag** — bypass skip logic, re-enrich all shots (Slice 9, `6272445`)
+- [x] **Prompt version-aware re-enrichment** — auto re-enrich when `AI_PROMPT_VERSION` changes (Slice 9, `6272445`)
+- [x] **Late-shot runtime root cause** — resolved by GH-28 model tag fix (post-S10 stall was `llava:7b` 404 loop)
+- [ ] **Live re-validation** — re-run the 16-shot capture with corrected `llava:latest` default to confirm
+- [ ] **Chrome extension integration** — trigger enrichment from extension pipeline
+- [ ] **Cost/rate limiting** — track token usage, add configurable rate limits
+- [ ] **Batch enrichment** — enrich shots from multiple videos in one run
+
+### Known Limitations
+
+- Shot matching uses Shot Label (e.g., "S01") which is deterministic from `sceneIndex`. If scene ordering changes between analysis runs, label matching could mismatch.
+- Current production adapter path is Ollama-specific; additional providers are not yet implemented.
+
+---
+
+## Acceptance Criteria
+
+- [x] Shot records can be enriched with 13 structured LLM output fields
+- [x] Enrichment is opt-in and backward-compatible
+- [x] Per-shot error isolation prevents one failure from blocking others
+- [x] Re-running with enrichment enabled skips already-enriched shots
+- [x] Failed shots (AI Error only) are automatically retried on re-run
+- [x] Old enrichment data is preserved when shots are recreated
+- [x] Airtable schema includes all required enrichment fields
+- [x] `shots_enriched` and `shots_skipped_enrichment` counts in summary
+- [x] At least one real LLM client adapter works end-to-end
+- [x] A failing or stalled shot is identifiable from logs by shot label and progress counter
+- [x] Timeout / failure state is surfaced clearly instead of the run appearing frozen
+- [x] `--force-reenrich` flag available for manual override
+- [x] Prompt-version-aware re-enrichment triggers automatically when `AI_PROMPT_VERSION` changes
+
+---
+
+## Commits (Chronological)
+
+| Commit | Date | Description | Tests Added |
+|---|---|---|---|
+| `0719744` | Mar 8, 2026 | Shot package contract + LLM response parser | 41 |
+| `bb1aaf9` | Mar 8, 2026 | Prompt payload builder + AI_PROMPT_VERSION | 21 |
+| `9c31802` | Mar 8, 2026 | Publisher enrichment integration | 10 |
+| `45bc4f2` | Mar 8, 2026 | Schema alignment (4 missing fields) | 11 |
+| `d89c759` | Mar 8, 2026 | Idempotent re-run (skip enriched shots) | 14 |
+| `78d07a2` | Mar 9, 2026 | Live Ollama adapter + CLI wiring | 25 |
+| `d719522` | Mar 10, 2026 | Per-shot observability + timeout/failure surfacing | 8 |
+| `aae72af` | Mar 10, 2026 | Default model tag fix + pre-flight model check (GH-28) | 8 |
+| `0f6045b` | Mar 10, 2026 | Wire verify_model=True into CLI for fail-fast (GH-28) | 2 |
+| `6272445` | Mar 10, 2026 | --force-reenrich + prompt-version-aware re-enrichment (GH-23) | 7 |
+| **Total** | | | **147** |
+
+---
+
+## Related
+
+- `CURRENT_STATE.md` — Current project state (updated to reflect GH-23 core completion and remaining follow-up work)
+- `docs/ISSUE_SHOT_LIST_PIPELINE.md` — Original shot list pipeline spec
+- `docs/GITHUB_ISSUE_CI_DEVELOPER_EXPERIENCE.md` — CI/DX framework (separate track)

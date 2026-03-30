@@ -217,6 +217,29 @@
     Skip AI descriptions (faster, scene detection only)
   </label>
 
+  <label style="font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+    <input type="checkbox" id="enrichShotsCheckbox">
+    Enable AI enrichment during publish
+  </label>
+
+  <label style="font-size:12px;margin-bottom:10px;display:flex;flex-direction:column;gap:4px;">
+    Enrichment provider
+    <select id="enrichProviderSelect" style="margin-top:4px;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+      <option value="ollama" selected>Ollama</option>
+      <option value="gemini">Gemini</option>
+    </select>
+  </label>
+
+  <label style="font-size:12px;margin-bottom:10px;display:flex;flex-direction:column;gap:4px;">
+    Enrichment model
+    <input type="text" id="enrichModelInput" value="qwen2.5-vl:latest" placeholder="qwen2.5-vl:latest">
+  </label>
+
+  <label style="font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+    <input type="checkbox" id="forceReenrichCheckbox">
+    Force re-enrich existing shots
+  </label>
+
   <button id="runPipelineBtn" disabled>Run Full Pipeline</button>
 
   <div id="pipelineStatus" class="capture-status hidden">

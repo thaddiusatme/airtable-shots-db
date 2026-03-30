@@ -11,6 +11,8 @@ Tests cover:
 """
 
 import json
+import logging
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,7 @@ from publisher.publish import (
     build_shot_records,
     build_video_fields,
     format_timestamp_hms,
+    is_shot_enriched,
     load_analysis,
     publish_to_airtable,
 )
@@ -68,6 +71,49 @@ SAMPLE_ANALYSIS = {
 }
 
 
+# Sampled capture data — reproduces GH-22 scenario (5s interval, index-based filenames)
+SAMPLED_ANALYSIS_5S = {
+    "videoId": "Lwh_e2gJCN0",
+    "scenes": [
+        {
+            "sceneIndex": 0,
+            "startTimestamp": 0,
+            "endTimestamp": 10,
+            "firstFrame": "frame_00000_t000.000s.png",
+            "lastFrame": "frame_00002_t010.000s.png",
+            "description": None,
+            "transition": None,
+        },
+        {
+            "sceneIndex": 1,
+            "startTimestamp": 15,
+            "endTimestamp": 25,
+            "firstFrame": "frame_00003_t015.000s.png",
+            "lastFrame": "frame_00005_t025.000s.png",
+            "description": None,
+            "transition": None,
+        },
+    ],
+    "totalScenes": 2,
+    "analysisDate": "2026-03-08T15:35:55+00:00",
+}
+
+SAMPLED_MANIFEST_5S = {
+    "videoId": "Lwh_e2gJCN0",
+    "videoTitle": "Test Sampled Video",
+    "captureDate": "2026-02-24T22:55:22.294Z",
+    "options": {"interval": 5, "maxFrames": 100},
+    "frames": [
+        {"index": 0, "timestamp": 0, "filename": "frame_00000_t000.000s.png"},
+        {"index": 1, "timestamp": 5, "filename": "frame_00001_t005.000s.png"},
+        {"index": 2, "timestamp": 10, "filename": "frame_00002_t010.000s.png"},
+        {"index": 3, "timestamp": 15, "filename": "frame_00003_t015.000s.png"},
+        {"index": 4, "timestamp": 20, "filename": "frame_00004_t020.000s.png"},
+        {"index": 5, "timestamp": 25, "filename": "frame_00005_t025.000s.png"},
+    ],
+}
+
+
 @pytest.fixture
 def analysis_dir(tmp_path: Path) -> Path:
     """Create a temporary directory with a valid analysis.json."""
@@ -80,6 +126,19 @@ def analysis_dir(tmp_path: Path) -> Path:
 def analysis() -> dict:
     """Return a copy of the sample analysis dict."""
     return json.loads(json.dumps(SAMPLE_ANALYSIS))
+
+
+@pytest.fixture
+def sampled_capture_dir(tmp_path: Path) -> Path:
+    """Create a capture directory simulating Chrome extension 5s-interval output.
+
+    Reproduces the GH-22 scenario: index-based filenames with 5s sampling.
+    """
+    (tmp_path / "analysis.json").write_text(json.dumps(SAMPLED_ANALYSIS_5S))
+    (tmp_path / "manifest.json").write_text(json.dumps(SAMPLED_MANIFEST_5S))
+    for frame in SAMPLED_MANIFEST_5S["frames"]:
+        (tmp_path / frame["filename"]).write_bytes(b"\x89PNG dummy")
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +531,116 @@ class TestBuildFrameRecords:
 
         # Default should be same as sample_rate=1
         assert len(result) == 131
+
+
+# ---------------------------------------------------------------------------
+# GH-22 regression: sampled capture frame contract
+# ---------------------------------------------------------------------------
+
+
+class TestSampledCaptureFrameContract:
+    """GH-22 regression: publisher must handle sampled capture output correctly.
+
+    Chrome extension captures frames at configurable intervals (default 5s).
+    Capture output uses index-based filenames:
+        frame_00000_t000.000s.png  (index=0, t=0s)
+        frame_00001_t005.000s.png  (index=1, t=5s)
+        frame_00002_t010.000s.png  (index=2, t=10s)
+
+    Publisher must use actual captured filenames from manifest.json,
+    not synthesize timestamp-based filenames like frame_00005_t005.000s.png.
+    """
+
+    SHOT_RECORDS = [
+        {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+        {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+    ]
+
+    MANIFEST_FRAME_MAP = {
+        int(f["timestamp"]): f["filename"]
+        for f in SAMPLED_MANIFEST_5S["frames"]
+    }
+
+    def test_source_filename_uses_actual_capture_name(self):
+        """Frame at t=5s should use actual capture filename (index-based),
+        not synthesized timestamp-based name."""
+        result = build_frame_records(
+            SAMPLED_ANALYSIS_5S, "recVID1", self.SHOT_RECORDS, {},
+            sample_rate=5,
+            manifest_frame_map=self.MANIFEST_FRAME_MAP,
+        )
+
+        frame_at_5 = [f for f in result if f["Timestamp (sec)"] == 5][0]
+        # Actual capture file at t=5 is frame_00001 (index 1), not frame_00005
+        assert frame_at_5["Source Filename"] == "frame_00001_t005.000s.png"
+
+    def test_all_frame_filenames_exist_on_disk(self, sampled_capture_dir: Path):
+        """Every Source Filename in frame records should correspond to
+        an actual file in the capture directory."""
+        result = build_frame_records(
+            SAMPLED_ANALYSIS_5S, "recVID1", self.SHOT_RECORDS, {},
+            sample_rate=5,
+            manifest_frame_map=self.MANIFEST_FRAME_MAP,
+        )
+
+        for frame in result:
+            filename = frame["Source Filename"]
+            assert (sampled_capture_dir / filename).exists(), \
+                f"Frame record references non-existent file: {filename}"
+
+    @patch("publisher.publish.upload_all_frames")
+    @patch("publisher.publish.upload_scene_frames")
+    @patch("publisher.publish.create_s3_client")
+    @patch("publisher.publish.Api")
+    def test_publish_passes_actual_filenames_to_upload(
+        self, mock_api_cls, mock_create_s3, mock_scene_upload,
+        mock_upload_all, sampled_capture_dir: Path,
+    ):
+        """publish_to_airtable should pass manifest-derived filenames
+        to upload_all_frames, not synthesized ones."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+        mock_frames = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            if table_name == "Frames":
+                return mock_frames
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {}},
+            {"id": "recSHOT2", "fields": {}},
+        ]
+        mock_frames.batch_create.return_value = []
+        mock_scene_upload.return_value = {}
+        mock_upload_all.return_value = {}
+
+        r2_config = MagicMock()
+        publish_to_airtable(
+            str(sampled_capture_dir),
+            api_key="fake_key",
+            base_id="appXYZ",
+            r2_config=r2_config,
+        )
+
+        mock_upload_all.assert_called_once()
+        call_kwargs = mock_upload_all.call_args
+        frame_filenames = call_kwargs[1]["frame_filenames"]
+
+        # Should contain actual manifest filenames (index-based naming)
+        assert "frame_00001_t005.000s.png" in frame_filenames
+        # Should NOT contain synthesized timestamp-based filenames
+        assert "frame_00005_t005.000s.png" not in frame_filenames
+
 
 # ---------------------------------------------------------------------------
 # publish_to_airtable tests (mocked pyairtable)
@@ -931,3 +1100,1272 @@ class TestErrorHandling:
             publish_to_airtable(
                 str(analysis_dir), api_key="fake_key", base_id=""
             )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment integration tests (publish_to_airtable + enrich_shots)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentIntegration:
+    """Tests for LLM enrichment within publish_to_airtable(enrich_shots=True)."""
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos and Shots tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Default: new video, 3 shots created
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    # -- Backward compatibility --
+
+    @patch("publisher.publish.Api")
+    def test_default_enrich_shots_false_no_updates(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Default enrich_shots=False should not update shot records after creation."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+
+        publish_to_airtable(str(analysis_dir), api_key="fake_key", base_id="appXYZ")
+
+        mock_shots.update.assert_not_called()
+
+    # -- Enrichment flow --
+
+    @patch("publisher.publish.Api")
+    def test_enrich_shots_updates_each_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """With enrich_shots=True, each shot record should be updated."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert mock_shots.update.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_enrich_fn_called_per_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_fn should be called once per shot."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert enrich_fn.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_enrichment_fields_written_to_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Updated shot should include parsed LLM fields."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # Check first update call
+        first_update = mock_shots.update.call_args_list[0]
+        record_id, fields = first_update[0]
+        assert record_id == "recSHOT1"
+        assert fields["AI Description (Local)"] == "Speaker at desk"
+        assert fields["Shot Type"] == "Medium"
+
+    @patch("publisher.publish.Api")
+    def test_enrichment_includes_ai_metadata(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Updated shot should include AI Model, Prompt Version, Updated At."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+            enrich_model="gpt-4o",
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Prompt Version" in fields
+        assert "AI Updated At" in fields
+        assert fields["AI Model"] == "gpt-4o"
+
+    # -- Error isolation --
+
+    @patch("publisher.publish.Api")
+    def test_enrichment_failure_isolated_per_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """LLM failure on one shot should not prevent others from being enriched."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            Exception("LLM timeout"),
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # All 3 shots should still be updated (2 success + 1 error)
+        assert mock_shots.update.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_enrichment_failure_stores_ai_error(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Failed enrichment should store error in AI Error field."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=Exception("LLM timeout"))
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Error" in fields
+        assert "LLM timeout" in fields["AI Error"]
+
+    # -- Edge cases --
+
+    @patch("publisher.publish.Api")
+    def test_enrich_shots_true_without_enrich_fn_skips(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_shots=True without enrich_fn should skip enrichment gracefully."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True,
+        )
+
+        mock_shots.update.assert_not_called()
+
+    # -- Summary --
+
+    @patch("publisher.publish.Api")
+    def test_summary_includes_shots_enriched(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Return dict should include shots_enriched count."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert "shots_enriched" in result
+        assert result["shots_enriched"] == 3
+
+    @patch("publisher.publish.Api")
+    def test_summary_counts_only_successful_enrichments(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """shots_enriched should only count successful enrichments."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            Exception("LLM timeout"),
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert result["shots_enriched"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Enrichment idempotency tests (skip already-enriched shots on re-run)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentIdempotency:
+    """Tests for idempotent enrichment: skip already-enriched shots on re-run.
+
+    When publish_to_airtable re-runs on a video whose shots were already
+    enriched, it should:
+      - Read old shot records before deleting them
+      - Detect which shots are already enriched (AI Prompt Version present)
+      - Skip the LLM call for those shots
+      - Copy old enrichment fields to the new shot records
+      - Still enrich shots that were not previously enriched
+      - Treat AI Error-only shots (no AI Prompt Version) as eligible for retry
+    """
+
+    from publisher.shot_package import AI_PROMPT_VERSION as _CURRENT_VERSION
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    # Fields that signal a shot was successfully enriched
+    ENRICHED_FIELDS = {
+        "AI Prompt Version": _CURRENT_VERSION,
+        "AI Updated At": "2026-03-01T00:00:00+00:00",
+        "AI Model": "gpt-4o",
+        "Shot Type": "Medium Shot",
+        "Camera Angle": "Eye Level",
+        "How It Is Shot": "Medium shot, static camera",
+        "AI JSON": '{"shot_type": "Medium Shot"}',
+    }
+
+    def _setup_mocks_with_existing_enriched_shots(
+        self, mock_api_cls, old_shot_fields_list
+    ):
+        """Set up mock Api with an existing video and old shot records.
+
+        Args:
+            mock_api_cls: Patched Api class.
+            old_shot_fields_list: List of field dicts for old shot records
+                (one per shot, matched by index to analysis scenes).
+
+        Returns:
+            Tuple of (mock_api, mock_videos, mock_shots).
+        """
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Build old shot records with enrichment data
+        old_shot_ids = [f"recOLD{i+1}" for i in range(len(old_shot_fields_list))]
+        old_records = {
+            old_shot_ids[i]: {
+                "id": old_shot_ids[i],
+                "fields": old_shot_fields_list[i],
+            }
+            for i in range(len(old_shot_fields_list))
+        }
+
+        # Existing video with reverse-link to old shots
+        mock_videos.all.return_value = [{
+            "id": "recVID1",
+            "fields": {
+                "Video ID": "KGHoVptow30",
+                "Shots": old_shot_ids,
+            },
+        }]
+
+        # Old shot records readable via get()
+        mock_shots.get.side_effect = lambda rid: old_records[rid]
+
+        # New shots created after deletion
+        mock_shots.batch_create.return_value = [
+            {"id": f"recNEW{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    # -- Skip already-enriched shots --
+
+    @patch("publisher.publish.Api")
+    def test_skips_enrichment_for_already_enriched_shots(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_fn should NOT be called when all shots are already enriched."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        enrich_fn.assert_not_called()
+
+    @patch("publisher.publish.Api")
+    def test_mixed_batch_only_enriches_unenriched(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """In a mixed batch, enrich_fn should only be called for unenriched shots."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # enriched
+            {"Shot Label": "S02"},                            # NOT enriched
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},  # enriched
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert enrich_fn.call_count == 1
+
+    # -- AI Error eligible for retry --
+
+    @patch("publisher.publish.Api")
+    def test_ai_error_shot_eligible_for_retry(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Shots with AI Error but no AI Prompt Version should be re-enriched."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},                   # enriched
+            {"Shot Label": "S02", "AI Error": "Enrichment failed: timeout"}, # failed → retry
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},                   # enriched
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # Only the failed shot (S02) should be re-enriched
+        assert enrich_fn.call_count == 1
+
+    # -- Preserve old enrichment on new records --
+
+    @patch("publisher.publish.Api")
+    def test_preserves_old_enrichment_on_new_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Enrichment fields from old shots should be copied to new shot records."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # Each new shot should be updated with old enrichment fields
+        assert mock_shots.update.call_count == 3
+        first_update = mock_shots.update.call_args_list[0]
+        record_id, fields = first_update[0]
+        assert record_id == "recNEW1"
+        assert fields.get("Shot Type") == "Medium Shot"
+        assert fields.get("AI Prompt Version") == self._CURRENT_VERSION
+
+    # -- Summary reporting --
+
+    @patch("publisher.publish.Api")
+    def test_summary_includes_shots_skipped(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Result summary should include shots_skipped_enrichment count."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # enriched → skip
+            {**self.ENRICHED_FIELDS, "Shot Label": "S02"},  # enriched → skip
+            {"Shot Label": "S03"},                            # NOT enriched → enrich
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert "shots_skipped_enrichment" in result
+        assert result["shots_skipped_enrichment"] == 2
+
+    @patch("publisher.publish.Api")
+    def test_summary_enriched_plus_skipped_equals_total(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """shots_enriched + shots_skipped_enrichment should equal total shots."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": "S01"},  # skip
+            {"Shot Label": "S02"},                            # enrich
+            {**self.ENRICHED_FIELDS, "Shot Label": "S03"},  # skip
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        total = result["shots_enriched"] + result["shots_skipped_enrichment"]
+        assert total == 3
+
+    # -- Backward compatibility guards (should PASS in RED phase) --
+
+    @patch("publisher.publish.Api")
+    def test_new_video_enriches_all_shots(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """New video (no existing shots) should enrich all shots normally."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": f"recSHOT{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert enrich_fn.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_enrich_disabled_ignores_old_enrichment_state(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """enrich_shots=False should work normally regardless of old shot state."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=False,
+        )
+
+        mock_shots.update.assert_not_called()
+        assert result["shots_created"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Force re-enrichment tests (GH-23: --force-reenrich flag)
+# ---------------------------------------------------------------------------
+
+
+class TestForceReenrich:
+    """Tests for force_reenrich=True — bypass skip logic, re-enrich all shots.
+
+    When force_reenrich is True, publish_to_airtable should:
+      - Ignore is_shot_enriched() and call enrich_fn for ALL shots
+      - NOT copy old enrichment fields to new records
+      - Report all shots as enriched (none skipped)
+    """
+
+    from publisher.shot_package import AI_PROMPT_VERSION as _CURRENT_VERSION
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    ENRICHED_FIELDS = {
+        "AI Prompt Version": _CURRENT_VERSION,
+        "AI Updated At": "2026-03-01T00:00:00+00:00",
+        "AI Model": "gpt-4o",
+        "Shot Type": "Medium Shot",
+        "Camera Angle": "Eye Level",
+        "How It Is Shot": "Medium shot, static camera",
+        "AI JSON": '{"shot_type": "Medium Shot"}',
+    }
+
+    def _setup_mocks_with_existing_enriched_shots(
+        self, mock_api_cls, old_shot_fields_list
+    ):
+        """Set up mock Api with an existing video and old shot records."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        old_shot_ids = [f"recOLD{i+1}" for i in range(len(old_shot_fields_list))]
+        old_records = {
+            old_shot_ids[i]: {
+                "id": old_shot_ids[i],
+                "fields": old_shot_fields_list[i],
+            }
+            for i in range(len(old_shot_fields_list))
+        }
+
+        mock_videos.all.return_value = [{
+            "id": "recVID1",
+            "fields": {
+                "Video ID": "KGHoVptow30",
+                "Shots": old_shot_ids,
+            },
+        }]
+
+        mock_shots.get.side_effect = lambda rid: old_records[rid]
+        mock_shots.batch_create.return_value = [
+            {"id": f"recNEW{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    @patch("publisher.publish.Api")
+    def test_force_reenrich_calls_enrich_fn_for_all_shots(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """force_reenrich=True should call enrich_fn for ALL shots, even enriched ones."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+            force_reenrich=True,
+        )
+
+        assert enrich_fn.call_count == 3
+
+    @patch("publisher.publish.Api")
+    def test_force_reenrich_reports_zero_skipped(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """force_reenrich=True should report 0 shots skipped."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+            force_reenrich=True,
+        )
+
+        assert result["shots_skipped_enrichment"] == 0
+        assert result["shots_enriched"] == 3
+
+    @patch("publisher.publish.Api")
+    def test_force_reenrich_false_still_skips(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """force_reenrich=False (default) should still skip enriched shots."""
+        old_fields = [
+            {**self.ENRICHED_FIELDS, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+            force_reenrich=False,
+        )
+
+        enrich_fn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Prompt-version-aware re-enrichment tests (GH-23)
+# ---------------------------------------------------------------------------
+
+
+class TestPromptVersionReenrich:
+    """Tests for automatic re-enrichment when AI_PROMPT_VERSION changes.
+
+    When a shot was enriched with an older AI Prompt Version, the enrichment
+    loop should treat it as unenriched and re-enrich it with the current
+    prompt version. Shots enriched with the CURRENT version are still skipped.
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    def _setup_mocks_with_existing_enriched_shots(
+        self, mock_api_cls, old_shot_fields_list
+    ):
+        """Set up mock Api with an existing video and old shot records."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        old_shot_ids = [f"recOLD{i+1}" for i in range(len(old_shot_fields_list))]
+        old_records = {
+            old_shot_ids[i]: {
+                "id": old_shot_ids[i],
+                "fields": old_shot_fields_list[i],
+            }
+            for i in range(len(old_shot_fields_list))
+        }
+
+        mock_videos.all.return_value = [{
+            "id": "recVID1",
+            "fields": {
+                "Video ID": "KGHoVptow30",
+                "Shots": old_shot_ids,
+            },
+        }]
+
+        mock_shots.get.side_effect = lambda rid: old_records[rid]
+        mock_shots.batch_create.return_value = [
+            {"id": f"recNEW{i+1}", "fields": {"Shot Label": f"S{i+1:02d}"}}
+            for i in range(3)
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    @patch("publisher.publish.Api")
+    def test_stale_prompt_version_triggers_reenrichment(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Shots enriched with an older AI Prompt Version should be re-enriched."""
+        from publisher.shot_package import AI_PROMPT_VERSION
+
+        old_fields = [
+            {"AI Prompt Version": "0.9", "Shot Label": "S01", "Shot Type": "Wide"},
+            {"AI Prompt Version": "0.9", "Shot Label": "S02", "Shot Type": "Close"},
+            {"AI Prompt Version": "0.9", "Shot Label": "S03", "Shot Type": "Medium"},
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # All 3 shots had stale prompt version → all should be re-enriched
+        assert enrich_fn.call_count == 3
+        assert result["shots_enriched"] == 3
+        assert result["shots_skipped_enrichment"] == 0
+
+    @patch("publisher.publish.Api")
+    def test_current_prompt_version_still_skipped(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Shots enriched with the current AI Prompt Version should still be skipped."""
+        from publisher.shot_package import AI_PROMPT_VERSION
+
+        old_fields = [
+            {"AI Prompt Version": AI_PROMPT_VERSION, "Shot Label": f"S{i+1:02d}"}
+            for i in range(3)
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        enrich_fn.assert_not_called()
+
+    @patch("publisher.publish.Api")
+    def test_mixed_versions_only_reenriches_stale(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Only shots with stale prompt versions should be re-enriched."""
+        from publisher.shot_package import AI_PROMPT_VERSION
+
+        old_fields = [
+            {"AI Prompt Version": AI_PROMPT_VERSION, "Shot Label": "S01"},  # current → skip
+            {"AI Prompt Version": "0.9", "Shot Label": "S02"},              # stale → reenrich
+            {"Shot Label": "S03"},                                           # never enriched → enrich
+        ]
+        _, _, mock_shots = self._setup_mocks_with_existing_enriched_shots(
+            mock_api_cls, old_fields
+        )
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # S02 (stale) + S03 (unenriched) = 2 enrich_fn calls
+        assert enrich_fn.call_count == 2
+        assert result["shots_enriched"] == 2
+        assert result["shots_skipped_enrichment"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Enrichment observability tests (GH-27: stall diagnosis)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentObservability:
+    """Tests for per-shot enrichment logging and error context.
+
+    GH-27: a 16-shot enrichment run stalled after S10 with no visible
+    progress or AI Error. These tests ensure:
+      - Shot label is logged BEFORE each enrichment request
+      - Progress counter (shot N of M) is logged
+      - Elapsed time is logged AFTER each enrichment completes
+      - AI Error field includes shot label for triage from Airtable
+      - A timed-out shot writes AI Error and allows later shots to proceed
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos and Shots tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        # Default: new video, 3 shots created
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    # -- Pre-request logging --
+
+    @patch("publisher.publish.Api")
+    def test_logs_shot_label_before_enrichment_request(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Shot label should appear in logs BEFORE enrich_fn is called."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        call_order = []
+
+        def tracking_enrich_fn(prompt_dict):
+            # Record what was logged before this call
+            call_order.append(list(caplog.messages))
+            return self.VALID_LLM_RESPONSE
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=tracking_enrich_fn,
+            )
+
+        # Before the first enrich_fn call, "S01" should appear in logs
+        assert len(call_order) >= 1
+        pre_first_call_msgs = " ".join(call_order[0])
+        assert "S01" in pre_first_call_msgs, (
+            f"Shot label 'S01' not logged before first enrichment request. "
+            f"Log messages before call: {call_order[0]}"
+        )
+
+    @patch("publisher.publish.Api")
+    def test_logs_progress_counter(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Logs should include progress like '1/3', '2/3', '3/3'."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        all_msgs = " ".join(caplog.messages)
+        assert "1/3" in all_msgs, f"Progress '1/3' not found in logs: {caplog.messages}"
+        assert "3/3" in all_msgs, f"Progress '3/3' not found in logs: {caplog.messages}"
+
+    # -- Post-request elapsed time --
+
+    @patch("publisher.publish.Api")
+    def test_logs_elapsed_time_after_enrichment(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Logs should include elapsed time (in seconds) after each enrichment."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        with caplog.at_level(logging.INFO, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        # At least one message should contain an explicit elapsed time like "1.2s" or "0.01s"
+        all_msgs = " ".join(caplog.messages)
+        has_elapsed = re.search(r"\d+\.\d+s", all_msgs)
+        assert has_elapsed, (
+            f"No elapsed time (e.g., '0.12s') found in enrichment logs: {caplog.messages}"
+        )
+
+    # -- AI Error includes shot label --
+
+    @patch("publisher.publish.Api")
+    def test_ai_error_includes_shot_label(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """AI Error field should include the shot label for Airtable triage."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(
+            side_effect=RuntimeError("Ollama request timed out after 600s")
+        )
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # First shot's AI Error should include the shot label
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Error" in fields
+        assert "S01" in fields["AI Error"], (
+            f"Shot label 'S01' not in AI Error: {fields['AI Error']}"
+        )
+
+    # -- Timeout writes AI Error and continues --
+
+    @patch("publisher.publish.Api")
+    def test_timeout_writes_ai_error_and_continues_to_next_shot(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """A RuntimeError timeout on S02 should write AI Error and still enrich S03."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            RuntimeError("Ollama request timed out after 600s"),
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        # All 3 shots should be updated (2 success + 1 error)
+        assert mock_shots.update.call_count == 3
+        # S02 should have AI Error with shot label
+        second_update = mock_shots.update.call_args_list[1]
+        _, fields = second_update[0]
+        assert "AI Error" in fields
+        assert "S02" in fields["AI Error"]
+        # Result should show 2 enriched
+        assert result["shots_enriched"] == 2
+
+    # -- Failure log includes shot label --
+
+    @patch("publisher.publish.Api")
+    def test_failure_log_includes_shot_label(
+        self, mock_api_cls, analysis_dir: Path, caplog
+    ):
+        """Warning log for failed enrichment should include shot label, not just record ID."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(
+            side_effect=RuntimeError("Ollama request timed out")
+        )
+
+        with caplog.at_level(logging.WARNING, logger="publisher.publish"):
+            publish_to_airtable(
+                str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+                enrich_shots=True, enrich_fn=enrich_fn,
+            )
+
+        # Warning messages should include shot labels, not just record IDs
+        warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("S01" in msg for msg in warning_msgs), (
+            f"Shot label 'S01' not in warning messages: {warning_msgs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# is_shot_enriched unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsAlreadyEnriched:
+    """Unit tests for is_shot_enriched() — the skip decision helper."""
+
+    def test_enriched_with_prompt_version(self):
+        assert is_shot_enriched({"AI Prompt Version": "1.0"}) is True
+
+    def test_not_enriched_empty_fields(self):
+        assert is_shot_enriched({}) is False
+
+    def test_not_enriched_with_ai_error_only(self):
+        """AI Error without AI Prompt Version means failed — eligible for retry."""
+        assert is_shot_enriched({"AI Error": "timeout"}) is False
+
+    def test_enriched_with_both_prompt_version_and_error(self):
+        """AI Prompt Version takes precedence — shot is considered enriched."""
+        assert is_shot_enriched({
+            "AI Prompt Version": "1.0",
+            "AI Error": "partial response",
+        }) is True
+
+    def test_not_enriched_with_empty_prompt_version(self):
+        """Empty string AI Prompt Version is falsy — not enriched."""
+        assert is_shot_enriched({"AI Prompt Version": ""}) is False
+
+    def test_not_enriched_with_none_prompt_version(self):
+        """None AI Prompt Version is falsy — not enriched."""
+        assert is_shot_enriched({"AI Prompt Version": None}) is False
+
+
+# ---------------------------------------------------------------------------
+# Enrichment success criteria tests (Issue #38 P0-B)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentSuccessCriteria:
+    """Tests for correct enrichment bookkeeping: AI Prompt Version must
+    only be set when parse_llm_response succeeds (no AI Error).
+
+    Issue #38 P0-B: The audit of U_cDKkDvPAQ found shots with BOTH
+    AI Error and AI Prompt Version, meaning parse failures were being
+    marked as "enriched" and preventing retry.
+    """
+
+    VALID_LLM_RESPONSE = json.dumps({
+        "scene_summary": "Speaker at desk",
+        "how_it_is_shot": "Medium shot, static",
+        "shot_type": "Medium Shot",
+        "camera_angle": "Eye Level",
+        "movement": "Static",
+        "lighting": "Studio",
+        "setting": "Home studio",
+        "subject": "Speaker",
+        "on_screen_text": "None",
+        "shot_function": "Introduction",
+        "frame_progression": "Minimal movement",
+        "production_patterns": "Standard talking head",
+        "recreation_guidance": "Use medium shot at eye level",
+    })
+
+    INVALID_LLM_RESPONSE = "Here is my analysis of the shot:\nThe scene shows a speaker..."
+
+    def _setup_mocks(self, mock_api_cls):
+        """Helper: set up mock Api with Videos and Shots tables."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recVID1", "fields": {}}
+        mock_shots.batch_create.return_value = [
+            {"id": "recSHOT1", "fields": {"Shot Label": "S01"}},
+            {"id": "recSHOT2", "fields": {"Shot Label": "S02"}},
+            {"id": "recSHOT3", "fields": {"Shot Label": "S03"}},
+        ]
+
+        return mock_api, mock_videos, mock_shots
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_set_ai_prompt_version(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """When LLM returns non-JSON prose, AI Prompt Version must NOT be written."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        for call in mock_shots.update.call_args_list:
+            _, fields = call[0]
+            if "AI Error" in fields:
+                assert "AI Prompt Version" not in fields, (
+                    "AI Prompt Version must not be set when AI Error is present"
+                )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_set_ai_updated_at(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """When LLM returns non-JSON, AI Updated At must NOT be written."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        for call in mock_shots.update.call_args_list:
+            _, fields = call[0]
+            if "AI Error" in fields:
+                assert "AI Updated At" not in fields, (
+                    "AI Updated At must not be set when AI Error is present"
+                )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_does_not_count_as_enriched(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Parse failures must not increment shots_enriched count."""
+        self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert result["shots_enriched"] == 0, (
+            "Parse failures should not be counted as enriched"
+        )
+
+    @patch("publisher.publish.Api")
+    def test_parse_failure_writes_ai_error(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Parse failure should still write AI Error to the shot record."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.INVALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Error" in fields
+
+    @patch("publisher.publish.Api")
+    def test_successful_parse_still_sets_ai_prompt_version(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """Valid JSON parse should still set AI Prompt Version (regression guard)."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(return_value=self.VALID_LLM_RESPONSE)
+
+        publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        first_update = mock_shots.update.call_args_list[0]
+        _, fields = first_update[0]
+        assert "AI Prompt Version" in fields
+        assert "AI Error" not in fields
+
+    @patch("publisher.publish.Api")
+    def test_mixed_success_and_failure_bookkeeping(
+        self, mock_api_cls, analysis_dir: Path
+    ):
+        """With mixed results, only successful parses get AI Prompt Version."""
+        _, _, mock_shots = self._setup_mocks(mock_api_cls)
+        enrich_fn = MagicMock(side_effect=[
+            self.VALID_LLM_RESPONSE,
+            self.INVALID_LLM_RESPONSE,
+            self.VALID_LLM_RESPONSE,
+        ])
+
+        result = publish_to_airtable(
+            str(analysis_dir), api_key="fake_key", base_id="appXYZ",
+            enrich_shots=True, enrich_fn=enrich_fn,
+        )
+
+        assert result["shots_enriched"] == 2
+
+        updates = mock_shots.update.call_args_list
+        # Shot 1: success
+        _, fields1 = updates[0][0]
+        assert "AI Prompt Version" in fields1
+        assert "AI Error" not in fields1
+        # Shot 2: parse failure
+        _, fields2 = updates[1][0]
+        assert "AI Error" in fields2
+        assert "AI Prompt Version" not in fields2
+        # Shot 3: success
+        _, fields3 = updates[2][0]
+        assert "AI Prompt Version" in fields3
+        assert "AI Error" not in fields3

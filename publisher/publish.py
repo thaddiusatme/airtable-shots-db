@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pyairtable import Api
 
@@ -35,6 +37,23 @@ class PublisherError(Exception):
     """Raised when the publisher encounters a recoverable error."""
 
     pass
+
+
+def is_shot_enriched(fields: dict[str, Any]) -> bool:
+    """Check whether a shot record has already been enriched.
+
+    A shot is considered enriched if it has a truthy AI Prompt Version field,
+    indicating a previous successful LLM enrichment pass. Shots with only
+    AI Error (no AI Prompt Version) are NOT considered enriched and remain
+    eligible for retry.
+
+    Args:
+        fields: Airtable field dict from a Shot record.
+
+    Returns:
+        True if the shot was already successfully enriched.
+    """
+    return bool(fields.get("AI Prompt Version"))
 
 
 def load_analysis(capture_dir: str) -> dict[str, Any]:
@@ -64,6 +83,55 @@ def load_analysis(capture_dir: str) -> dict[str, Any]:
         raise PublisherError("analysis.json missing required field: scenes")
 
     return analysis
+
+
+def resolve_frame_filename(
+    ts: int, manifest_frame_map: dict[int, str] | None
+) -> str | None:
+    """Resolve the actual frame filename for a given timestamp.
+
+    When manifest_frame_map is provided, looks up the actual captured filename.
+    Returns None if the manifest exists but the timestamp was never captured.
+    Falls back to synthesized timestamp-based naming when no manifest is available.
+
+    Args:
+        ts: Integer timestamp in seconds.
+        manifest_frame_map: Optional dict mapping timestamp → actual filename.
+
+    Returns:
+        Frame filename string, or None if the timestamp should be skipped.
+    """
+    if manifest_frame_map and ts in manifest_frame_map:
+        return manifest_frame_map[ts]
+    elif manifest_frame_map:
+        return None
+    else:
+        return f"frame_{ts:05d}_t{ts:03d}.000s.png"
+
+
+def get_manifest_frame_map(capture_dir: str) -> dict[int, str]:
+    """Load manifest.json and return a mapping of timestamp → actual filename.
+
+    Args:
+        capture_dir: Path to the capture directory containing manifest.json.
+
+    Returns:
+        Dict mapping integer timestamp (seconds) to actual frame filename.
+        Returns empty dict if manifest.json doesn't exist.
+    """
+    manifest_path = Path(capture_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return {}
+
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    frame_map: dict[int, str] = {}
+    for frame in manifest.get("frames", []):
+        ts = int(frame["timestamp"])
+        frame_map[ts] = frame["filename"]
+
+    return frame_map
 
 
 def format_timestamp_hms(seconds: float) -> str:
@@ -165,12 +233,17 @@ def build_frame_records(
     shot_records: list[dict[str, Any]],
     r2_url_map: dict[str, str],
     sample_rate: int = 1,
+    manifest_frame_map: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build list of Frame record field dicts from analysis.
 
     For each shot's time range [startTimestamp, endTimestamp], generates one
     Frame record per sample_rate seconds. Each frame is linked to its parent Shot
     and Video records.
+
+    When manifest_frame_map is provided, uses actual captured filenames from
+    the manifest instead of synthesizing timestamp-based names. Timestamps
+    not found in the manifest are skipped (they were never captured).
 
     Args:
         analysis: Parsed analysis dict with scenes.
@@ -179,6 +252,9 @@ def build_frame_records(
             in the same order as analysis["scenes"].
         r2_url_map: Dict mapping frame filename → R2 public URL.
         sample_rate: Create frames every N seconds (default: 1 = every second).
+        manifest_frame_map: Optional dict mapping timestamp (int) → actual
+            filename from manifest.json. When provided, only timestamps
+            present in the map produce Frame records.
 
     Returns:
         List of field dicts ready for Airtable batch_create on the Frames table.
@@ -199,7 +275,9 @@ def build_frame_records(
             if frame_key in frames_by_key:
                 continue
                 
-            filename = f"frame_{ts:05d}_t{ts:03d}.000s.png"
+            filename = resolve_frame_filename(ts, manifest_frame_map)
+            if filename is None:
+                continue
 
             record: dict[str, Any] = {
                 "Frame Key": frame_key,
@@ -233,12 +311,20 @@ def publish_to_airtable(
     skip_frames: bool = False,
     max_workers: int = 1,
     frame_sample_rate: int = 1,
+    enrich_shots: bool = False,
+    enrich_fn: Callable[[dict[str, Any]], str] | None = None,
+    enrich_model: str = "",
+    force_reenrich: bool = False,
 ) -> dict[str, Any]:
     """Publish analysis results to Airtable.
 
     Reads analysis.json, upserts a Video record, and creates Shot records
     (one per scene). If r2_config is provided, uploads boundary frame
     images to R2 and attaches them as Scene Start / Scene End.
+
+    When enrich_shots is True and enrich_fn is provided, each shot is
+    packaged with its frames and transcript, sent to the LLM via enrich_fn,
+    and the parsed response is written back to the shot record.
 
     Idempotent: re-running deletes existing Shot records for the video
     before creating new ones.
@@ -249,9 +335,16 @@ def publish_to_airtable(
         base_id: Airtable base ID (e.g., "appXYZ...").
         dry_run: If True, preview what would be published without writing.
         r2_config: Optional R2 configuration for image uploads.
+        enrich_shots: If True, run LLM enrichment on each shot after creation.
+        enrich_fn: Callable that takes a prompt payload dict and returns a
+            raw LLM response string. Required when enrich_shots is True.
+        enrich_model: Model name for AI Model field tracking.
+        force_reenrich: If True, re-enrich all shots regardless of existing
+            enrichment state. Overrides prompt-version-aware skip logic.
 
     Returns:
-        Summary dict with video_record_id, shots_created, video_id.
+        Summary dict with video_record_id, shots_created, video_id,
+        frames_created, and shots_enriched (when enrichment is enabled).
 
     Raises:
         PublisherError: On validation errors or Airtable API failures.
@@ -349,9 +442,22 @@ def publish_to_airtable(
         # Delete existing shots for idempotency.
         # Linked record fields can't be queried by record ID in formulas,
         # so read the reverse-link "Shots" field from the Video record.
+        # Before deleting, read old shot records to preserve enrichment state.
+        old_enrichment_by_label: dict[str, dict[str, Any]] = {}
         if existing_videos:
             existing_shot_ids = existing_videos[0]["fields"].get("Shots", [])
             if existing_shot_ids:
+                if enrich_shots and enrich_fn:
+                    for shot_id in existing_shot_ids:
+                        old_record = shots_table.get(shot_id)
+                        old_fields = old_record.get("fields", {})
+                        label = old_fields.get("Shot Label", "")
+                        if label:
+                            old_enrichment_by_label[label] = old_fields
+                    logger.info(
+                        "Read %d old shot records for enrichment state",
+                        len(old_enrichment_by_label),
+                    )
                 shots_table.batch_delete(existing_shot_ids)
                 logger.info(
                     "Deleted %d existing Shot records", len(existing_shot_ids)
@@ -380,13 +486,18 @@ def publish_to_airtable(
                         "Deleted %d existing Frame records", len(existing_frame_ids)
                     )
 
-            # Generate frame filenames (respecting sample rate)
+            # Load manifest for actual frame filenames
+            manifest_frame_map = get_manifest_frame_map(capture_dir)
+
+            # Generate frame filenames (manifest-driven when available)
             frame_filenames = []
             for scene in analysis["scenes"]:
                 start = int(scene["startTimestamp"])
                 end = int(scene["endTimestamp"])
                 for ts in range(start, end + 1, frame_sample_rate):
-                    frame_filenames.append(f"frame_{ts:05d}_t{ts:03d}.000s.png")
+                    filename = resolve_frame_filename(ts, manifest_frame_map)
+                    if filename is not None:
+                        frame_filenames.append(filename)
 
             # Upload all frames to R2 (reuse s3_client from scene uploads)
             frame_url_map = upload_all_frames(
@@ -400,17 +511,138 @@ def publish_to_airtable(
 
             # Build and create Frame records
             frame_records = build_frame_records(
-                analysis, video_record_id, created, frame_url_map, sample_rate=frame_sample_rate
+                analysis, video_record_id, created, frame_url_map,
+                sample_rate=frame_sample_rate,
+                manifest_frame_map=manifest_frame_map or None,
             )
             created_frames = frames_table.batch_create(frame_records)
             frames_created_count = len(created_frames)
             logger.info("Created %d Frame records", frames_created_count)
+
+        # Enrich shots with LLM analysis if requested
+        shots_enriched_count = 0
+        shots_skipped_count = 0
+        if enrich_shots and enrich_fn:
+            from publisher.shot_package import (
+                AI_PROMPT_VERSION,
+                SHOT_ENRICHMENT_FIELDS,
+                build_enrichment_prompt,
+                build_shot_package,
+                collect_shot_frames,
+                parse_llm_response,
+            )
+
+            # Field names that should be preserved from old enrichment
+            enrichment_preserve_fields = set(SHOT_ENRICHMENT_FIELDS.values()) | {
+                "AI Prompt Version", "AI Updated At", "AI Model", "AI JSON",
+            }
+
+            manifest_frame_map_enrich = get_manifest_frame_map(capture_dir)
+
+            total_shots = len(created)
+            for i, shot_record in enumerate(created):
+                scene = analysis["scenes"][i]
+                shot_label = f"S{scene['sceneIndex'] + 1:02d}"
+
+                # Check if old shot was already enriched
+                old_fields = old_enrichment_by_label.get(shot_label, {})
+
+                if not force_reenrich and is_shot_enriched(old_fields):
+                    # Check prompt version — re-enrich if stale
+                    old_version = old_fields.get("AI Prompt Version", "")
+                    if old_version == AI_PROMPT_VERSION:
+                        # Copy old enrichment fields to new shot record
+                        preserved = {
+                            k: v for k, v in old_fields.items()
+                            if k in enrichment_preserve_fields and v is not None
+                        }
+                        if preserved:
+                            shots_table.update(shot_record["id"], preserved)
+                        shots_skipped_count += 1
+                        logger.info(
+                            "Skipped enrichment for shot %s (%s) — already enriched (v%s)",
+                            shot_record["id"],
+                            shot_label,
+                            old_version,
+                        )
+                        continue
+                    logger.info(
+                        "Re-enriching %s — prompt version changed (%s → %s)",
+                        shot_label,
+                        old_version,
+                        AI_PROMPT_VERSION,
+                    )
+
+                logger.info(
+                    "Enriching %s (%d/%d) — requesting LLM analysis",
+                    shot_label,
+                    i + 1,
+                    total_shots,
+                )
+                shot_start = time.monotonic()
+                try:
+                    frames = collect_shot_frames(
+                        scene,
+                        manifest_frame_map_enrich or None,
+                        sample_rate=frame_sample_rate,
+                    )
+                    transcript = scene_transcripts.get(i, "")
+                    package = build_shot_package(
+                        scene, frames, transcript, video_id
+                    )
+                    prompt = build_enrichment_prompt(package)
+                    raw_response = enrich_fn(prompt)
+                    elapsed = time.monotonic() - shot_start
+                    fields = parse_llm_response(raw_response)
+
+                    if "AI Error" in fields:
+                        shots_table.update(shot_record["id"], fields)
+                        logger.warning(
+                            "Parse failed for %s (%d/%d) in %.1fs: %s",
+                            shot_label,
+                            i + 1,
+                            total_shots,
+                            elapsed,
+                            fields["AI Error"],
+                        )
+                    else:
+                        fields["AI Prompt Version"] = AI_PROMPT_VERSION
+                        fields["AI Updated At"] = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                        if enrich_model:
+                            fields["AI Model"] = enrich_model
+                        shots_table.update(shot_record["id"], fields)
+                        shots_enriched_count += 1
+                        logger.info(
+                            "Enriched %s (%d/%d) in %.1fs",
+                            shot_label,
+                            i + 1,
+                            total_shots,
+                            elapsed,
+                        )
+                except Exception as e:
+                    elapsed = time.monotonic() - shot_start
+                    logger.warning(
+                        "Enrichment failed for %s (%d/%d) after %.1fs: %s",
+                        shot_label,
+                        i + 1,
+                        total_shots,
+                        elapsed,
+                        e,
+                    )
+                    shots_table.update(
+                        shot_record["id"],
+                        {"AI Error": f"Enrichment failed for {shot_label}: {e}"},
+                    )
 
         return {
             "video_record_id": video_record_id,
             "video_id": video_id,
             "shots_created": len(created),
             "frames_created": frames_created_count,
+            "shots_enriched": shots_enriched_count,
+            "shots_skipped_enrichment": shots_skipped_count,
         }
 
     except PublisherError:

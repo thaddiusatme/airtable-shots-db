@@ -217,3 +217,331 @@ class TestPublisherCLI:
             "--skip-frames",
         ])
         assert rc == 0
+
+
+class TestCLIEnrichmentFlags:
+    """Tests for --enrich-shots and related enrichment CLI flags."""
+
+    @patch("publisher.publish.Api")
+    def test_enrich_shots_passes_true(self, mock_api_cls, analysis_dir: Path):
+        """--enrich-shots flag sets enrich_shots=True in publish_to_airtable call."""
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_videos = MagicMock()
+        mock_shots = MagicMock()
+
+        def table_router(base_id, table_name):
+            if table_name == "Videos":
+                return mock_videos
+            if table_name == "Shots":
+                return mock_shots
+            return MagicMock()
+
+        mock_api.table.side_effect = table_router
+        mock_videos.all.return_value = []
+        mock_videos.create.return_value = {"id": "recNEW", "fields": {}}
+        mock_shots.batch_create.return_value = [{"id": "recS1"}]
+
+        with patch("publisher.cli.publish_to_airtable") as mock_publish:
+            mock_publish.return_value = {
+                "video_record_id": "recNEW",
+                "video_id": "KGHoVptow30",
+                "shots_created": 1,
+                "frames_created": 0,
+                "shots_enriched": 0,
+                "shots_skipped_enrichment": 0,
+            }
+            rc = main([
+                "--capture-dir", str(analysis_dir),
+                "--api-key", "patFAKE",
+                "--base-id", "appFAKE",
+                "--skip-frames",
+                "--enrich-shots",
+            ])
+            assert rc == 0
+            call_kwargs = mock_publish.call_args[1]
+            assert call_kwargs["enrich_shots"] is True
+
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_enrich_model_propagates(self, mock_publish, mock_get, analysis_dir: Path):
+        """--enrich-model value is passed through to publish_to_airtable."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:7b"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-model", "llava:7b",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_model"] == "llava:7b"
+
+    @patch("publisher.llm_enricher.requests.post")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_enrich_fn_is_callable_for_ollama(self, mock_publish, mock_post, analysis_dir: Path):
+        """When --enrich-shots with ollama provider, enrich_fn should be a callable."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-provider", "ollama",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_fn"] is not None
+        assert callable(call_kwargs["enrich_fn"])
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_default_provider_is_ollama(self, mock_publish, analysis_dir: Path):
+        """Default enrichment provider should be ollama (no --enrich-provider needed)."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_fn"] is not None
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_no_enrich_shots_means_no_enrich_fn(self, mock_publish, analysis_dir: Path):
+        """Without --enrich-shots, enrich_fn should not be passed (or be None)."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs.get("enrich_shots") is not True or call_kwargs.get("enrich_fn") is None
+
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_ollama_url_propagates(self, mock_publish, mock_get, analysis_dir: Path):
+        """--ollama-url should configure the adapter's target URL."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--ollama-url", "http://myhost:9999/api/generate",
+        ])
+        assert rc == 0
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_default_enrich_model_is_llava_latest(self, mock_publish, analysis_dir: Path):
+        """CLI default --enrich-model should be llava:latest (matches common local install)."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_model"] == "llava:latest"
+
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_enrich_shots_passes_verify_model_true(self, mock_publish, mock_get, analysis_dir: Path):
+        """CLI should pass verify_model=True to make_ollama_enrich_fn when --enrich-shots is set."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+        ])
+        assert rc == 0
+        # verify_model=True should have triggered a GET /api/tags call
+        mock_get.assert_called_once()
+
+    @patch("publisher.llm_enricher.requests.get")
+    def test_enrich_shots_fails_fast_on_bad_model(self, mock_get, analysis_dir: Path):
+        """CLI should return 1 and not enter publish loop when model check fails."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-model", "nonexistent-model:v1",
+        ])
+        assert rc == 1
+
+    @patch("publisher.llm_enricher.requests.get")
+    @patch("publisher.cli.publish_to_airtable")
+    def test_force_reenrich_flag_propagates(self, mock_publish, mock_get, analysis_dir: Path):
+        """--force-reenrich should pass force_reenrich=True to publish_to_airtable."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "models": [{"name": "llava:latest"}]
+            }),
+        )
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 1,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--force-reenrich",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["force_reenrich"] is True
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_max_enrich_frames_flag(self, mock_publish, analysis_dir: Path):
+        """--max-enrich-frames should be accepted as a CLI flag."""
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--max-enrich-frames", "4",
+        ])
+        assert rc == 0
+
+    @patch("publisher.cli.publish_to_airtable")
+    def test_gemini_provider_builds_enrich_fn(self, mock_publish, analysis_dir: Path):
+        mock_publish.return_value = {
+            "video_record_id": "recNEW",
+            "video_id": "KGHoVptow30",
+            "shots_created": 1,
+            "frames_created": 0,
+            "shots_enriched": 0,
+            "shots_skipped_enrichment": 0,
+        }
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-provider", "gemini",
+            "--enrich-model", "gemini-2.0-flash",
+            "--gemini-api-key", "gemini-key",
+        ])
+        assert rc == 0
+        call_kwargs = mock_publish.call_args[1]
+        assert call_kwargs["enrich_model"] == "gemini-2.0-flash"
+        assert callable(call_kwargs["enrich_fn"])
+
+    def test_gemini_provider_requires_api_key(self, analysis_dir: Path):
+        rc = main([
+            "--capture-dir", str(analysis_dir),
+            "--api-key", "patFAKE",
+            "--base-id", "appFAKE",
+            "--skip-frames",
+            "--enrich-shots",
+            "--enrich-provider", "gemini",
+            "--enrich-model", "gemini-2.0-flash",
+        ])
+        assert rc == 1

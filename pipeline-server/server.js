@@ -57,6 +57,20 @@ function launchPipeline(job, label = '') {
     });
 }
 
+function applyResumeInputOverrides(job, body = {}) {
+  job.input = {
+    ...job.input,
+    skipVlm: !!body.skipVlm,
+    enrichShots: !!body.enrichShots,
+    ...(body.enrichProvider && { enrichProvider: body.enrichProvider }),
+    ...(body.enrichModel && { enrichModel: body.enrichModel }),
+    forceReenrich: !!body.enrichShots && !!body.forceReenrich,
+    ...(body.transcript && { transcript: body.transcript }),
+    ...(body.transcriptSegments && { transcriptSegments: body.transcriptSegments }),
+    ...(body.capture && { capture: body.capture }),
+  };
+}
+
 // --- Routes ---
 
 // Health check (extension uses this to verify server is running)
@@ -66,7 +80,19 @@ app.get('/health', (req, res) => {
 
 // Start a pipeline run
 app.post('/pipeline/run', (req, res) => {
-  const { videoUrl, videoId, videoTitle, transcript, transcriptSegments, capture, skipVlm } = req.body;
+  const {
+    videoUrl,
+    videoId,
+    videoTitle,
+    transcript,
+    transcriptSegments,
+    capture,
+    skipVlm,
+    enrichShots,
+    enrichProvider,
+    enrichModel,
+    forceReenrich,
+  } = req.body;
 
   if (!videoUrl || !videoId) {
     return res.status(400).json({ error: 'videoUrl and videoId are required' });
@@ -82,7 +108,19 @@ app.post('/pipeline/run', (req, res) => {
     error: null,
     errorDetail: null,
     completedSteps: [],
-    input: { videoUrl, videoId, videoTitle, transcript, transcriptSegments, capture, skipVlm: !!skipVlm },
+    input: {
+      videoUrl,
+      videoId,
+      videoTitle,
+      transcript,
+      transcriptSegments,
+      capture,
+      skipVlm: !!skipVlm,
+      enrichShots: !!enrichShots,
+      ...(enrichProvider && { enrichProvider }),
+      ...(enrichModel && { enrichModel }),
+      forceReenrich: !!enrichShots && !!forceReenrich,
+    },
     captureDir: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -206,10 +244,11 @@ app.post('/pipeline/resume/:runId', (req, res) => {
       input: {
         videoUrl: `https://www.youtube.com/watch?v=${diskState.videoId}`,
         videoId: diskState.videoId,
-        skipVlm: req.body?.skipVlm || false,
-        ...(req.body?.transcript && { transcript: req.body.transcript }),
-        ...(req.body?.transcriptSegments && { transcriptSegments: req.body.transcriptSegments }),
-        capture: req.body?.capture || {},
+        skipVlm: false,
+        enrichShots: false,
+        enrichProvider: 'ollama',
+        forceReenrich: false,
+        capture: {},
       },
       captureDir: null,
       createdAt: diskState.createdAt,
@@ -222,6 +261,8 @@ app.post('/pipeline/resume/:runId', (req, res) => {
   if (job.status !== 'error') {
     return res.status(400).json({ error: 'Job is not resumable (not in error state)' });
   }
+
+  applyResumeInputOverrides(job, req.body);
 
   // Reset job status for resumption
   job.status = 'queued';

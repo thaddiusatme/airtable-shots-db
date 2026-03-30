@@ -133,6 +133,8 @@ client_secret.json
 .DS_Store
 captures/
 storyboard_output/
+storyboard_output_*/
+gh[0-9]*.txt
 pipeline-server/node_modules/
 
 # Spyder project settings

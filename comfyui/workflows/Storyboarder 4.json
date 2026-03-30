@@ -2,8 +2,8 @@
   "1": {
     "inputs": {
       "seed": 159309201978722,
-      "steps": 30,
-      "cfg": 7,
+      "steps": 20,
+      "cfg": 8,
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
@@ -66,8 +66,8 @@
   },
   "6": {
     "inputs": {
-      "width": 384,
-      "height": 216,
+      "width": 1024,
+      "height": 576,
       "batch_size": 1
     },
     "class_type": "EmptyLatentImage",
@@ -106,22 +106,16 @@
   },
   "10": {
     "inputs": {
-      "weight": 0.8,
+      "weight": 1,
       "start_at": 0,
       "end_at": 1,
-      "weight_type": "composition precise",
-      "combine_embeds": "concat",
-      "embeds_scaling": "V only",
+      "weight_type": "standard",
       "model": [
-        "3",
+        "14",
         0
       ],
       "ipadapter": [
         "15",
-        0
-      ],
-      "clip_vision": [
-        "16",
         0
       ],
       "image": [
@@ -129,7 +123,7 @@
         0
       ]
     },
-    "class_type": "IPAdapterAdvanced",
+    "class_type": "IPAdapter",
     "_meta": {
       "title": "IPAdapter"
     }
@@ -144,6 +138,19 @@
       "title": "Load Reference Montage"
     }
   },
+  "14": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "preset": "STANDARD (medium strength)"
+    },
+    "class_type": "IPAdapterUnifiedLoader",
+    "_meta": {
+      "title": "IPAdapter Unified Loader"
+    }
+  },
   "15": {
     "inputs": {
       "ipadapter_file": "ip-adapter-plus_sdxl_vit-h.safetensors"
@@ -151,15 +158,6 @@
     "class_type": "IPAdapterModelLoader",
     "_meta": {
       "title": "Load IPAdapter Model"
-    }
-  },
-  "16": {
-    "inputs": {
-      "clip_name": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
-    },
-    "class_type": "CLIPVisionLoader",
-    "_meta": {
-      "title": "Load CLIP Vision"
     }
   }
 }

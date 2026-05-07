@@ -85,13 +85,25 @@ python scripts/validate_storyboard_handoff.py \
 
 ## Setup
 
-### 1. Python Environment
+### 1. Python Environment (Portable Vendored Deps)
+
+This repo uses a vendored `.deps/` directory instead of a `venv` so the
+project folder is path-portable (e.g. it can live on an external drive
+and be moved without breaking shebangs).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# First time (or after switching Python minor versions):
+./scripts/setup_deps.sh --dev   # installs runtime + test deps into .deps/
+
+# Run anything via the wrapper (sets PYTHONPATH automatically):
+./scripts/run.sh -m pytest tests/
+./scripts/run.sh import_watch_later.py --fetch-transcripts
+./scripts/run.sh -m publisher --capture-dir captures/VIDEO_ID_*/ ...
 ```
+
+`.deps/` is gitignored. Drop `--dev` from setup if you only need runtime
+packages. A traditional `python -m venv .venv && pip install -r requirements.txt`
+still works if you prefer it; just don't move the repo afterwards.
 
 ### 2. Environment Variables
 

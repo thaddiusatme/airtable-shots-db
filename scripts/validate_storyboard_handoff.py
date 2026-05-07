@@ -200,20 +200,25 @@ def main():
         ]
         if args.shot_id:
             records = [r for r in records if r.get("id") == args.shot_id]
-    
-    # Filter by shot label if specified
-    if args.shot_label:
-        records = [
-            r for r in records
-            if r.get("fields", {}).get("Shot Label") == args.shot_label
-        ]
     else:
-        # Backward-compatible fallback: attempt the original filter.
+        # Backward-compatible fallback: attempt the original filter when the
+        # video_id could not be resolved to a Videos record.
+        print(
+            f"Could not resolve a Videos record for video_id={args.video_id!r}; "
+            "falling back to legacy fetch_enriched_shots_for_storyboard()."
+        )
         records = fetch_enriched_shots_for_storyboard(
             shots_table,
             video_id=args.video_id,
             shot_id=args.shot_id,
         )
+
+    # Optional shot-label filter composes with whichever fetch path ran above.
+    if args.shot_label:
+        records = [
+            r for r in records
+            if r.get("fields", {}).get("Shot Label") == args.shot_label
+        ]
 
     if not records:
         print("\nNo enriched shots found. Run enrichment first.")

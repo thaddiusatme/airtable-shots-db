@@ -8,7 +8,15 @@ Automated pipeline for extracting, analyzing, publishing, and storyboarding YouT
 
 ## Quick Start
 
+> **First-time setup:** Install Python deps with `./scripts/setup_deps.sh --dev`.
+> All Python invocations below use `./scripts/run.sh` so the vendored `.deps/`
+> directory is on `PYTHONPATH`. (A traditional `python -m venv .venv && pip install -r requirements.txt`
+> also works — drop the `./scripts/run.sh` prefix and use `python` directly if you go that route.)
+
 ```bash
+# 0. One-time: install Python dependencies into vendored .deps/
+./scripts/setup_deps.sh --dev
+
 # 1. Start pipeline server (serves Chrome extension)
 cd pipeline-server && node server.js
 
@@ -19,10 +27,10 @@ npx ts-node src/index.ts "https://youtube.com/watch?v=VIDEO_ID" 1.0 --output ../
 # 3. Analyze scenes (Python)
 cd /path/to/airtable-shots-db
 set -a && source .env && set +a
-python -m analyzer --capture-dir captures/VIDEO_ID_*/ --verbose
+./scripts/run.sh -m analyzer --capture-dir captures/VIDEO_ID_*/ --verbose
 
 # 4. Publish to Airtable + R2 (with Frames)
-python -m publisher \
+./scripts/run.sh -m publisher \
   --capture-dir captures/VIDEO_ID_*/ \
   --api-key "$AIRTABLE_API_KEY" \
   --base-id "$AIRTABLE_BASE_ID" \
@@ -32,7 +40,7 @@ python -m publisher \
   --verbose
 
 # 5. Optional: publish with shot enrichment
-python -m publisher \
+./scripts/run.sh -m publisher \
   --capture-dir captures/VIDEO_ID_*/ \
   --api-key "$AIRTABLE_API_KEY" \
   --base-id "$AIRTABLE_BASE_ID" \
@@ -42,7 +50,7 @@ python -m publisher \
   --verbose
 
 # 6. Optional: enrich with Gemini instead of Ollama
-python -m publisher \
+./scripts/run.sh -m publisher \
   --capture-dir captures/VIDEO_ID_*/ \
   --api-key "$AIRTABLE_API_KEY" \
   --base-id "$AIRTABLE_BASE_ID" \
@@ -54,14 +62,14 @@ python -m publisher \
   --verbose
 
 # 7. A/B test model comparison (Ollama vs Gemini)
-python scripts/ab_enrichment_test.py \
+./scripts/run.sh scripts/ab_enrichment_test.py \
   --capture-dir captures/VIDEO_ID_*/ \
   --models llava:latest gemini:gemini-2.5-flash \
   --max-frames 4 \
   --show-details
 
 # 8. Generate storyboard panels (dry-run)
-python scripts/validate_storyboard_handoff.py \
+./scripts/run.sh scripts/validate_storyboard_handoff.py \
   --video-id VIDEO_ID --shot-label S01 --dry-run
 ```
 

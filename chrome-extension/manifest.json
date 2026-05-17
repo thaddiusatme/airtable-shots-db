@@ -1,17 +1,15 @@
 {
   "manifest_version": 3,
   "name": "YouTube Transcript → Airtable",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Extract YouTube transcripts and save them to Airtable",
   "permissions": [
     "activeTab",
-    "storage",
-    "downloads"
+    "storage"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://api.airtable.com/*",
-    "http://127.0.0.1:*/*"
+    "https://api.airtable.com/*"
   ],
   "content_scripts": [
     {

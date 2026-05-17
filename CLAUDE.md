@@ -1,5 +1,12 @@
 # CLAUDE.md — Project Manifest
 
+## Current state (as of 2026-05-17)
+
+- **Active branch**: `feature/transcript-only-extension` — pushed to remote, not yet merged to master
+- **Previous branch** (abandoned): `fix/gh-61-62-storyboard-validate-and-readme-quickstart` — do not continue this work; storyboard is deprioritized
+- **Uncommitted change on old branch**: `pipeline-server/orchestrator.js` had `shell: false` + unquoted `videoUrl` fix — not committed, not relevant to current direction
+- **Next step**: open a PR for `feature/transcript-only-extension` → merge to master when ready
+
 ## What this project is
 
 **YouTube Transcript → Airtable** — a Chrome extension that extracts transcripts from YouTube's web UI and saves them to an Airtable database. One-click operation: open a YouTube video, click the extension, extract, save.

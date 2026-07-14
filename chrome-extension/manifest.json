@@ -14,7 +14,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/watch*"],
-      "js": ["content.js"],
+      "js": ["lib/transcript-dom.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

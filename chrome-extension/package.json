@@ -1,0 +1,12 @@
+{
+  "name": "youtube-transcript-airtable-extension",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Chrome extension: extract YouTube transcripts and save them to Airtable",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

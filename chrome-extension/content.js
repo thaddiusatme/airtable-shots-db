@@ -11,22 +11,21 @@ async function waitForElement(selector, timeout = 5000) {
   return null;
 }
 
-// Transcript rows render as different elements depending on which concurrent
-// YouTube A/B panel variant the session is bucketed into:
-//   - classic Polymer panel:            ytd-transcript-segment-renderer
-//   - modern "PAmodern_transcript_view": transcript-segment-view-model
-const SEGMENT_SELECTORS = 'ytd-transcript-segment-renderer, transcript-segment-view-model';
+// Segment element matching + per-row parsing live in lib/transcript-dom.js so they can
+// be unit-tested against captured variant fixtures without a browser (injected before
+// this script via manifest.json). TranscriptDom is a global in the content-script world.
+const { collectSegments, parseSegment } = TranscriptDom;
 
 // The modern variant lazy-loads its rows behind a spinner after the panel is
 // shown, so poll until at least one segment element appears.
 async function waitForSegments(root, timeout = 5000) {
   const startTime = Date.now();
   while (Date.now() - startTime < timeout) {
-    const segments = root.querySelectorAll(SEGMENT_SELECTORS);
+    const segments = collectSegments(root);
     if (segments.length > 0) return segments;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  return root.querySelectorAll(SEGMENT_SELECTORS);
+  return collectSegments(root);
 }
 
 async function openTranscriptPanel() {
@@ -113,7 +112,7 @@ async function extractTranscript() {
     // becomes null once expanded, while a stale hidden "PAmodern_transcript_view"
     // panel (still showing a spinner) also exists — matching by target-id grabs the
     // wrong one. Matching segment elements by tag avoids both traps.
-    let segments = document.querySelectorAll(SEGMENT_SELECTORS);
+    let segments = collectSegments(document);
 
     // If none are present yet, open the panel and poll for lazy-loaded rows.
     if (segments.length === 0) {
@@ -136,80 +135,10 @@ async function extractTranscript() {
 
     // Panel reference used later for language detection (variant-agnostic).
     const transcriptPanel = segments[0].closest('ytd-engagement-panel-section-list-renderer') || document;
-    
-    // Helper function to parse timestamp to seconds
-    function parseTimestampToSeconds(timestamp) {
-      if (!timestamp) return null;
-      const parts = timestamp.split(':').map(Number);
-      if (parts.length === 2) {
-        // M:SS format
-        return parts[0] * 60 + parts[1];
-      } else if (parts.length === 3) {
-        // H:MM:SS format
-        return parts[0] * 3600 + parts[1] * 60 + parts[2];
-      }
-      return null;
-    }
-    
-    const transcriptSegments = Array.from(segments)
-      .map(seg => {
-        // Try ALL possible approaches to find timestamp and text
-        let timestampStr = null;
-        let text = null;
-        
-        // Approach 0: modern view-model variant (transcript-segment-view-model)
-        //   <div class="ytwTranscriptSegmentViewModelTimestamp">0:00</div>
-        //   <span class="ytAttributedStringHost" role="text">line text</span>
-        const vmTimestamp = seg.querySelector('.ytwTranscriptSegmentViewModelTimestamp');
-        const vmText = seg.querySelector('.ytAttributedStringHost, span[role="text"]');
 
-        // Approach 1: span.yt-core-attributed-string (Feb 2026 DOM)
-        const coreSpans = seg.querySelectorAll('span.yt-core-attributed-string');
-        
-        // Approach 2: div children with specific roles
-        const divChildren = seg.querySelectorAll('div');
-        
-        // Approach 3: All direct children
-        const directChildren = Array.from(seg.children);
-        
-        // Approach 4: yt-formatted-string elements
-        const ytFormatted = seg.querySelectorAll('yt-formatted-string');
-        
-        // Approach 5: Any element containing a timestamp pattern (M:SS or H:MM:SS)  
-        const allEls = seg.querySelectorAll('*');
-        for (const el of allEls) {
-          const txt = el.textContent.trim();
-          // Check if this looks like a timestamp (matches M:SS or H:MM:SS)
-          if (!timestampStr && /^\d{1,2}:\d{2}(:\d{2})?$/.test(txt)) {
-            timestampStr = txt;
-          }
-        }
-        
-        if (vmText) {
-          if (!timestampStr) timestampStr = vmTimestamp?.textContent?.trim();
-          text = vmText.textContent?.trim();
-        } else if (coreSpans.length >= 2) {
-          if (!timestampStr) timestampStr = coreSpans[0]?.textContent?.trim();
-          text = coreSpans[1]?.textContent?.trim();
-        } else if (ytFormatted.length >= 2) {
-          if (!timestampStr) timestampStr = ytFormatted[0]?.textContent?.trim();
-          text = ytFormatted[1]?.textContent?.trim();
-        } else if (directChildren.length >= 2) {
-          if (!timestampStr) timestampStr = directChildren[0]?.textContent?.trim();
-          text = directChildren[1]?.textContent?.trim();
-        } else {
-          // Last resort: full text content, strip timestamp if found
-          const fullText = seg.textContent.trim();
-          if (timestampStr && fullText.startsWith(timestampStr)) {
-            text = fullText.substring(timestampStr.length).trim();
-          } else {
-            text = fullText;
-          }
-        }
-        
-        const start = parseTimestampToSeconds(timestampStr);
-        return { text, start };
-      })
+    // Per-row parsing lives in lib/transcript-dom.js (parseSegment) so it stays testable.
+    const transcriptSegments = segments
+      .map(parseSegment)
       .filter(item => item.text);
     
     // Build full transcript text from segments (backward compatible)

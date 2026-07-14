@@ -11,6 +11,24 @@ async function waitForElement(selector, timeout = 5000) {
   return null;
 }
 
+// Transcript rows render as different elements depending on which concurrent
+// YouTube A/B panel variant the session is bucketed into:
+//   - classic Polymer panel:            ytd-transcript-segment-renderer
+//   - modern "PAmodern_transcript_view": transcript-segment-view-model
+const SEGMENT_SELECTORS = 'ytd-transcript-segment-renderer, transcript-segment-view-model';
+
+// The modern variant lazy-loads its rows behind a spinner after the panel is
+// shown, so poll until at least one segment element appears.
+async function waitForSegments(root, timeout = 5000) {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    const segments = root.querySelectorAll(SEGMENT_SELECTORS);
+    if (segments.length > 0) return segments;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return root.querySelectorAll(SEGMENT_SELECTORS);
+}
+
 async function openTranscriptPanel() {
   console.log('Attempting to open transcript panel...');
   
@@ -90,50 +108,34 @@ async function extractTranscript() {
                      'Unknown Title';
   
   try {
-    // First check if transcript panel is already open
-    let transcriptPanel = document.querySelector('ytd-transcript-renderer');
-    
-    // If not open, try to open it
-    if (!transcriptPanel) {
-      console.log('Transcript panel not open, attempting to open...');
-      const opened = await openTranscriptPanel();
-      
-      if (opened) {
-        // Wait for panel to load with multiple attempts
-        transcriptPanel = await waitForElement('ytd-transcript-renderer', 5000);
-      }
-      
-      // Try alternative engagement panel selectors (YouTube updated target-id in Feb 2026)
-      if (!transcriptPanel) {
-        const engagementPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]') ||
-                                document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]') ||
-                                document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]');
-        if (engagementPanel) {
-          transcriptPanel = engagementPanel.querySelector('ytd-transcript-renderer') || engagementPanel;
-        }
-      }
-    }
-    
-    if (!transcriptPanel) {
-      return { 
-        error: 'Could not find or open transcript panel. Try manually clicking "Show transcript" first, then extract again.',
-        videoId,
-        videoTitle
-      };
-    }
-    
-    console.log('Transcript panel found, extracting segments...');
-    
-    // Extract transcript segments from DOM
-    const segments = transcriptPanel.querySelectorAll('ytd-transcript-segment-renderer');
-    
+    // Search document-wide for segments rather than locking onto a specific panel
+    // wrapper: the modern variant renders into an engagement panel whose target-id
+    // becomes null once expanded, while a stale hidden "PAmodern_transcript_view"
+    // panel (still showing a spinner) also exists — matching by target-id grabs the
+    // wrong one. Matching segment elements by tag avoids both traps.
+    let segments = document.querySelectorAll(SEGMENT_SELECTORS);
+
+    // If none are present yet, open the panel and poll for lazy-loaded rows.
     if (segments.length === 0) {
-      return { 
-        error: 'Transcript panel is open but no segments found',
+      console.log('No transcript segments yet, attempting to open panel...');
+      const opened = await openTranscriptPanel();
+      if (opened) {
+        segments = await waitForSegments(document, 5000);
+      }
+    }
+
+    if (segments.length === 0) {
+      return {
+        error: 'Could not find transcript segments. Try manually clicking "Show transcript" first, then extract again.',
         videoId,
         videoTitle
       };
     }
+
+    console.log(`Found ${segments.length} transcript segments, extracting...`);
+
+    // Panel reference used later for language detection (variant-agnostic).
+    const transcriptPanel = segments[0].closest('ytd-engagement-panel-section-list-renderer') || document;
     
     // Helper function to parse timestamp to seconds
     function parseTimestampToSeconds(timestamp) {
@@ -155,6 +157,12 @@ async function extractTranscript() {
         let timestampStr = null;
         let text = null;
         
+        // Approach 0: modern view-model variant (transcript-segment-view-model)
+        //   <div class="ytwTranscriptSegmentViewModelTimestamp">0:00</div>
+        //   <span class="ytAttributedStringHost" role="text">line text</span>
+        const vmTimestamp = seg.querySelector('.ytwTranscriptSegmentViewModelTimestamp');
+        const vmText = seg.querySelector('.ytAttributedStringHost, span[role="text"]');
+
         // Approach 1: span.yt-core-attributed-string (Feb 2026 DOM)
         const coreSpans = seg.querySelectorAll('span.yt-core-attributed-string');
         
@@ -177,7 +185,10 @@ async function extractTranscript() {
           }
         }
         
-        if (coreSpans.length >= 2) {
+        if (vmText) {
+          if (!timestampStr) timestampStr = vmTimestamp?.textContent?.trim();
+          text = vmText.textContent?.trim();
+        } else if (coreSpans.length >= 2) {
           if (!timestampStr) timestampStr = coreSpans[0]?.textContent?.trim();
           text = coreSpans[1]?.textContent?.trim();
         } else if (ytFormatted.length >= 2) {

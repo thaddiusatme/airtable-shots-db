@@ -25,6 +25,34 @@ function showError(message) {
   showStatus(message, 'error');
 }
 
+// Build the transcript-related Airtable fields, guarding against the 100k-char
+// Long Text limit (GH-64). Returns the fields plus a human-readable warning
+// string (or null) describing any truncation that occurred.
+function buildTranscriptFields(data) {
+  const fields = {
+    'Transcript Language': data.language,
+    'Transcript Source': data.source
+  };
+
+  const fullText = TranscriptUtils.truncateForAirtable(data.transcript);
+  fields['Transcript (Full)'] = fullText.value;
+
+  const warnings = [];
+  if (fullText.truncated) {
+    warnings.push('full transcript truncated to 100k chars');
+  }
+
+  if (data.transcriptSegments?.length > 0) {
+    const fitted = TranscriptUtils.fitSegmentsForAirtable(data.transcriptSegments);
+    fields['Transcript (Timestamped)'] = fitted.json;
+    if (fitted.truncated) {
+      warnings.push(`${fitted.droppedCount} timestamped segment(s) dropped to fit 100k chars`);
+    }
+  }
+
+  return { fields, warning: warnings.length ? `⚠ Saved with limits: ${warnings.join('; ')}` : null };
+}
+
 async function extractTranscript() {
   showStatus('Extracting transcript...', 'info');
   extractBtn.disabled = true;
@@ -142,6 +170,7 @@ async function saveToAirtable() {
 
   showStatus('Saving to Airtable...', 'info');
   saveBtn.disabled = true;
+  let truncationWarning = null;
 
   try {
     const { airtableApiKey, airtableBaseId } = await chrome.storage.sync.get([
@@ -182,6 +211,8 @@ async function saveToAirtable() {
       });
 
       const thumbnailUrl = `https://i.ytimg.com/vi/${currentTranscriptData.videoId}/hqdefault.jpg`;
+      const { fields: transcriptFields, warning } = buildTranscriptFields(currentTranscriptData);
+      truncationWarning = warning;
       const createFields = {
         'Video Title': currentTranscriptData.videoTitle,
         'Video ID': currentTranscriptData.videoId,
@@ -190,14 +221,8 @@ async function saveToAirtable() {
         'Triage Status': 'Queued',
         'Thumbnail URL': thumbnailUrl,
         'Thumbnail (Image)': [{ url: thumbnailUrl }],
-        'Transcript (Full)': currentTranscriptData.transcript,
-        'Transcript Language': currentTranscriptData.language,
-        'Transcript Source': currentTranscriptData.source
+        ...transcriptFields
       };
-
-      if (currentTranscriptData.transcriptSegments?.length > 0) {
-        createFields['Transcript (Timestamped)'] = JSON.stringify(currentTranscriptData.transcriptSegments);
-      }
 
       if (channelRecordId) {
         createFields['Channel'] = [channelRecordId];
@@ -213,15 +238,9 @@ async function saveToAirtable() {
       });
     } else {
       const recordId = findResult.records[0].id;
-      const updateFields = {
-        'Transcript (Full)': currentTranscriptData.transcript,
-        'Transcript Language': currentTranscriptData.language,
-        'Transcript Source': currentTranscriptData.source
-      };
-
-      if (currentTranscriptData.transcriptSegments?.length > 0) {
-        updateFields['Transcript (Timestamped)'] = JSON.stringify(currentTranscriptData.transcriptSegments);
-      }
+      const { fields: transcriptFields, warning } = buildTranscriptFields(currentTranscriptData);
+      truncationWarning = warning;
+      const updateFields = { ...transcriptFields };
 
       saveResponse = await fetch(`https://api.airtable.com/v0/${airtableBaseId}/Videos/${recordId}`, {
         method: 'PATCH',
@@ -239,7 +258,11 @@ async function saveToAirtable() {
     }
 
     const action = findResult.records.length === 0 ? 'created + saved' : 'saved';
-    showSuccess(`✓ Transcript ${action} to Airtable successfully!`);
+    if (truncationWarning) {
+      showStatus(`✓ Transcript ${action}. ${truncationWarning}`, 'info');
+    } else {
+      showSuccess(`✓ Transcript ${action} to Airtable successfully!`);
+    }
     saveBtn.textContent = 'Saved ✓';
 
   } catch (error) {

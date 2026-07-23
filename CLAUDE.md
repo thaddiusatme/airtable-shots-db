@@ -2,11 +2,15 @@
 
 ## Current state (as of 2026-07-17)
 
-- **Active branch**: `feature/transcript-only-extension` — pushed to remote, not yet merged to master. Continue on this branch.
-- **Active initiative**: convert the toolbar popup into an **in-page, agent-drivable panel** (see next section). Design is in `docs/PROJECT-MANIFEST-in-page-panel.md` — Status: **Phase 0 spike built and verified GO** (2026-07-17).
-- **Uncommitted**: the whole Phase 0 spike is dirty on disk — `content.js` (panel + lifecycle), `manifest.json` (service worker), new `background.js`, plus `docs/`. **Commit this before starting Phase 1.**
+- **Active branch**: `feature/transcript-only-extension` — **2 commits ahead of remote, NOT pushed**, not merged to master. Working tree clean (only untracked `.claude/settings.local.json`). Continue on this branch.
+- **Active initiative**: convert the toolbar popup into an **in-page, agent-drivable panel** (see next section). Design is in `docs/PROJECT-MANIFEST-in-page-panel.md` — Status: **Phase 0 spike committed and verified GO** (2026-07-17).
+- **Phase drift**: `background.js` is a complete 210-line implementation, so Phase 1 is essentially done and Phase 2 largely so. Real position: **"Phase 3, one bug from a working loop."**
+- **Committed** (commits `8ecf1a4` + `77777b1`): the Phase 0 spike — `content.js` (panel + lifecycle), `manifest.json` (service worker), new `background.js`, `popup.*` trims, plus `docs/` and the `verify-panel` / `harvest-playlist` skills. The old "commit the dirty spike first" note is done.
 - **Previous branch** (abandoned): `fix/gh-61-62-storyboard-validate-and-readme-quickstart` — do not continue this work; storyboard is deprioritized
-- **Next step**: fix the stale-transcript-panel bug (see below) — it blocks the agent loop — then Phase 1.
+- **Next step**: item #1 of the stale-transcript-panel fix (idle-gating on `watch-flexy` video-id) is
+  implemented and verified live (2026-07-22) — see the "Status update" in the Fix direction section
+  below. Item #2 (anti-corruption provenance guard) is still open and should land before calling the
+  agent loop fully hardened; then finish Phase 3/4.
 
 ### Phase 0 verification result (2026-07-17, live run against a 76-video playlist)
 
@@ -105,10 +109,50 @@ the previous video; the previous video's segments are briefly still in the DOM).
 This is a **Phase 4 (agent-contract)** problem as much as Phase 3: the panel must not advertise readiness until
 the current video's transcript entry point actually belongs to the current video.
 
-**Fix direction** (untested — do not assume): before extracting, verify the transcript entry point is fresh for
-the current `videoId` (re-query the description section after it re-renders; consider gating on the panel's own
-`videoId` matching, or retrying on 400) rather than clicking whatever button is present. Retry-after-delay is a
-plausible cheap mitigation since the token becomes valid once YouTube finishes the swap.
+**Fix direction** (refined 2026-07-16, still untested — do not assume). Both symptoms are one defect: nothing ties
+*what gets saved* to *the video the URL currently names*. `extractTranscript()` reads `videoId` fresh from the URL
+(correct) but then harvests `collectSegments(document)` document-wide, trusting whatever rows are in the DOM; and
+`mountPanel()` stamps `data-video-id` + flips to `idle` on `yt-navigate-finish` while YouTube is still mid-swap.
+So: old segments cleared → stale-token "Show transcript" click → 400 → loud failure; old segments *not yet* cleared
+→ harvest video N under N+1's URL → silent corruption. **A fix that only chases the 400 leaves the corruption path
+open.** Constraint stands: make stale extraction *impossible*, and verify provenance, not just that state reached
+`saved`.
+
+Layered plan, cheapest / highest-value first:
+
+1. **Stop `idle` from lying (contract fix, biggest lever).** Don't advertise `idle` until the page has actually
+   finished swapping. Candidate free signal: `ytd-watch-flexy`'s `video-id` attribute, which flips only when the
+   swap completes — gate `idle` on `watch-flexy[video-id] === urlVideoId`; hold a non-ready state (e.g. `waiting`)
+   until they match. This makes the token fresh by click time and dissolves the 400 without a retry hack. **Verify
+   live first** that `watch-flexy[video-id]` genuinely lags the URL during the swap (don't theorize — check the DOM),
+   and that gating `idle` doesn't strand the agent's `find` (button still mounts, just not "ready").
+2. **Bind segments to the current video before saving (anti-corruption guard).** Refuse to harvest unless segments
+   were populated *after* the current nav settled — a generation counter bumped on each `yt-navigate-finish`, plus
+   the corruption-signature tripwire (`extracting→saving` in <~100ms with no fetch → treat as stale, error loudly,
+   never save). Note: true *content* verification is hard — the transcript is just text+timestamps with no intrinsic
+   videoId — so verify *provenance* (opened after this video's swap), not content.
+3. **Retry-on-400 / retry-on-empty as cheap insurance,** not the primary mechanism — should rarely fire once #1 holds.
+
+**Status update (2026-07-22): item #1 implemented and verified live.** `mountPanel()` no longer
+flips straight to `idle`; it now checks `ytd-watch-flexy`'s own `video-id` attribute against the
+URL and holds a new `waiting` state (button still mounts, `data-save-state="waiting"`) until they
+match, polling every 50ms up to a 4s fail-open timeout. `onExtractSaveClick()` also refuses to run
+while `data-save-state === 'waiting'`, so a fast agent click can't slip through mid-swap.
+
+Live-measured before fixing (Claude in Chrome, real SPA nav via a related-video click): at
+`yt-navigate-finish`, URL already named the new video but `watch-flexy[video-id]` still reported
+the *previous* one for **~1.4–2s** before catching up — confirming the "idle lies" theory with real
+numbers, not a guess. After the fix, the same nav sequence correctly held `waiting` until the swap
+landed, then flipped to `idle`, and a subsequent extract+save produced a clean, correctly-attributed
+Airtable write (`receRO6SOSsBmx9Ck`, Stratholme video, created 2026-07-23) — no stale-token 400, no
+cross-video contamination.
+
+Item #2 (anti-corruption provenance guard / generation counter) is **still not implemented** — this
+fix addresses the 400 failure mode, not the silent-corruption path documented above. Don't treat
+the loop as fully hardened until #2 lands too. Item #3 (retry) remains unneeded so far.
+
+Not yet committed — see `git log` / working tree for current status; commit message will reference
+this section.
 
 ## Active initiative: in-page agent-drivable panel
 

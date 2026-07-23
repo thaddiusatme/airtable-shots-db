@@ -248,6 +248,12 @@ function setPanelState(panel, state, { errorMsg = '', statusText } = {}) {
 }
 
 async function onExtractSaveClick(panel) {
+  if (panel.dataset.saveState === 'waiting') {
+    // SPA swap hasn't landed yet per GH-68 — refuse rather than risk the
+    // stale-continuation-token 400. The agent should poll data-save-state
+    // and retry once it flips to 'idle'.
+    return;
+  }
   const btn = panel.querySelector('.ytx-btn');
   btn.disabled = true;
   try {
@@ -277,8 +283,51 @@ async function onExtractSaveClick(panel) {
   }
 }
 
-// Idempotent: builds the panel once. Refreshes data-video-id and resets to idle
-// so a remount on the next video starts clean.
+// GH-68 fix (contract fix, "stop idle from lying"): ytd-watch-flexy's own
+// video-id attribute flips only once YouTube has actually finished swapping
+// the page for a SPA nav — confirmed live (2026-07-22): at yt-navigate-finish
+// the URL already names the new video but watch-flexy still reports the
+// previous one for ~1.4-2s before it catches up. Clicking "Show transcript"
+// before that swap completes hits the *previous* video's continuation token
+// and YouTube's get_transcript endpoint 400s (silent, permanent spinner).
+// So: hold a non-ready 'waiting' state until watch-flexy's video-id matches
+// the URL, THEN flip to 'idle'. The button still mounts immediately (agent's
+// find() still succeeds) — only the advertised readiness is delayed.
+function getFlexyVideoId() {
+  const el = document.querySelector('ytd-watch-flexy');
+  return el ? el.getAttribute('video-id') : null;
+}
+
+// Poll (cheap, short-lived) rather than MutationObserver: the watch-flexy
+// attribute swap is a single flip, not a stream of mutations worth wiring
+// an observer for, and polling is trivial to reason about / bound in time.
+function waitForVideoSwap(panel, videoId, { timeout = 4000, interval = 50 } = {}) {
+  const start = Date.now();
+  const tick = () => {
+    // Bail if the panel moved on to a *different* video while we were waiting
+    // (rapid nav-nav-nav) — don't stomp a newer wait with a stale one.
+    if (panel.dataset.videoId !== videoId) return;
+
+    if (getFlexyVideoId() === videoId) {
+      setPanelState(panel, 'idle', { statusText: 'Idle' });
+      return;
+    }
+    if (Date.now() - start >= timeout) {
+      // Fail open: don't strand the panel forever if watch-flexy's attribute
+      // never matches for some reason (unknown YouTube layout, etc.) — better
+      // to risk the old 400 than to brick the agent loop on every video.
+      console.log('waitForVideoSwap: timed out waiting for watch-flexy video-id to match, flipping idle anyway');
+      setPanelState(panel, 'idle', { statusText: 'Idle' });
+      return;
+    }
+    setTimeout(tick, interval);
+  };
+  tick();
+}
+
+// Idempotent: builds the panel once. Refreshes data-video-id and resets to a
+// non-ready 'waiting' state so a remount on the next video starts clean and
+// doesn't advertise idle until the SPA swap has actually landed.
 function mountPanel() {
   let panel = document.getElementById(PANEL_ID);
   if (!panel) {
@@ -308,8 +357,16 @@ function mountPanel() {
     document.body.appendChild(panel);
   }
 
-  panel.dataset.videoId = getCurrentVideoId();
-  setPanelState(panel, 'idle', { statusText: 'Idle' });
+  const videoId = getCurrentVideoId();
+  panel.dataset.videoId = videoId;
+
+  if (getFlexyVideoId() === videoId) {
+    // Fresh full page load, or watch-flexy already caught up — no need to wait.
+    setPanelState(panel, 'idle', { statusText: 'Idle' });
+  } else {
+    setPanelState(panel, 'waiting', { statusText: 'Loading…' });
+    waitForVideoSwap(panel, videoId);
+  }
   return panel;
 }
 

@@ -21,20 +21,45 @@ To verify the panel itself works, use `verify-panel` instead. This skill assumes
 - Button `[data-testid="extract-save-btn"]`.
 - Saves are **upsert-by-`Video ID`** — idempotent. Re-running is safe; a retry updates, never duplicates.
 
+## CRITICAL: click the button with `computer`, never `javascript_tool`
+
+**Trigger the Extract & Save button with a real `computer` `left_click`. Never `.click()` it via
+`javascript_tool` or any other scripted/synthetic DOM method.** This was discovered the hard way
+(GH-69, 2026-07-23): a scripted click on the button is indistinguishable in the DOM from a real one —
+it finds the right element, calls `.click()`, and the button's own handler runs — but YouTube's
+transcript-loading path silently never fires *any* network request in response (confirmed via
+`read_network_requests`: zero `get_transcript` calls across dozens of scripted-click attempts,
+spanning multiple unrelated videos, timeouts up to 90s+). The same button, same video, same
+session, clicked with a genuine trusted mouse event (a human, or `computer` `left_click`), works
+immediately and reliably. This smells like an anti-automation gate tied to real browser user
+activation, not a DOM or timing bug — extensive retry/timeout tuning in `content.js` could not work
+around it, because the actual defect was in how the button was being triggered, not in the
+extension's code.
+
+Practically: use `find` to get a ref for the button (or a screenshot to get real coordinates —
+verify with `getBoundingClientRect` if screen scaling looks off) and `computer` `left_click` on it.
+`javascript_tool` is still fine — even preferred — for everything *read-only*: checking
+`data-save-state`/`data-video-id`/`data-error-msg`, polling for terminal state, reading
+`location.search`. It must just never be the thing that fires the click.
+
 ## Loop
 
 1. **Enumerate the queue once, up front.** From the playlist sidebar:
    `document.querySelectorAll('ytd-playlist-panel-video-renderer a')` → dedupe the `v=` param. Keep the ordered list of ids + titles; that's the work list.
 2. **Optionally skip already-saved.** Query Airtable (Videos `tblpwqMfiMsRsYuMY`, base `appWSbpJAxjCyLfrZ`) for existing `Video ID`s and skip them. Worth it on a re-run; skip this on first pass. Ask the user if unsure.
 3. **For each video:**
-   - Navigate by **clicking its sidebar entry** — never `navigate`, never reload. Full loads are slow and defeat the design.
+   - Navigate by **clicking its sidebar entry** (a real `computer` click — see above) — never `navigate`, never reload. Full loads are slow and defeat the design.
    - Wait for `data-video-id` to equal the new `v=` **and** `data-save-state` to be `idle`. Don't click before both hold, or you'll fire at the previous video's panel.
    - **`idle` is necessary but NOT sufficient — the panel lies.** It remounts on `yt-navigate-finish` while YouTube is still mid-swap. Also wait for the page to settle (`document.title` reflects the new video) and for the previous video's segments to clear. Clicking too early either 400s YouTube's transcript API (permanent spinner → `error`) or harvests the previous video's leftover segments and saves them under this video's ID (**silent corruption**). A couple of seconds of patience per video prevents both.
-   - Click the button, then poll `data-save-state` until `saved` or `error` (cap ~60s).
+   - Click the button with `computer` `left_click`, then use `javascript_tool` to poll `data-save-state` until `saved` or `error` (cap ~60s; a successful extraction can legitimately take 30s+ for long videos — don't give up early).
    - Record: id, title, terminal state, `data-error-msg`.
 4. **Report a table** at the end: id / title / state / error, plus counts and a list of anything needing a human.
 
-Prefer one `javascript_tool` call that clicks and polls to terminal in a single round-trip — a save takes ~2.7s, so a call per poll is pure overhead. `javascript_tool` output is **blocked if it contains the page URL/query string**: read `location.search` internally, never return `location.href`.
+Poll with short, separate `javascript_tool` read-only calls rather than one long blocking loop —
+a single `javascript_tool` call has its own ~45s execution ceiling, shorter than a legitimate slow
+extraction can take, so a long in-page polling loop can time out the tool call even though the page
+itself is still working correctly. `javascript_tool` output is **blocked if it contains the page
+URL/query string**: read `location.search` internally, never return `location.href`.
 
 ## Errors
 
@@ -43,6 +68,12 @@ Prefer one `javascript_tool` call that clicks and polls to terminal in a single 
 **Retry once**, in place, before recording a failure — the panel is idempotent so a retry is free.
 
 **Watch for the known 400 signature**: "Could not find transcript segments" with the transcript panel stuck on a spinner, on a video reached by SPA nav. This is an **open, unfixed bug** (see CLAUDE.md "ROOT CAUSE FOUND"): clicking too soon after navigation POSTs a stale continuation token and `POST /youtubei/v1/get_transcript` returns **400**. Confirm with `read_network_requests` (`urlPattern: "transcript"`) rather than guessing from the DOM. Waiting longer before clicking, or retrying, may clear it — the token becomes valid once YouTube finishes the swap.
+
+This is a **different** failure signature from the GH-69 no-activation problem above — use
+`read_network_requests` to tell them apart. GH-68 (stale token): a `get_transcript` POST **is**
+observed, and it returns 400. GH-69 (scripted click / no user activation): **zero** `get_transcript`
+requests are observed at all, however long you wait. If you're seeing the zero-request variant,
+the fix is to click with `computer`, not to wait longer or retry.
 
 **Never write a DOM-level fix for a spinner without checking the request first.** Three such fixes were attempted and all failed; one silently corrupted a record.
 

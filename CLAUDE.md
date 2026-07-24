@@ -11,6 +11,13 @@
   implemented and verified live (2026-07-22) — see the "Status update" in the Fix direction section
   below. Item #2 (anti-corruption provenance guard) is still open and should land before calling the
   agent loop fully hardened; then finish Phase 3/4.
+- **2026-07-23**: investigated GH-69 (`docs/GITHUB_ISSUE_69_...md`) — `content.js`'s
+  `openTranscriptPanel()` was reworked (correct button targeting by label, click verification,
+  single-candidate patient wait) and is a real improvement, but live testing found the actual
+  automated-testing failure mode is that **scripted clicks never trigger YouTube's transcript
+  request at all** — a real `computer` click does, reliably. See the GH-69 subsection below; both
+  `verify-panel` and `harvest-playlist` skills now mandate real clicks. `content.js` changes not
+  yet committed — working tree has this plus the untracked issue doc.
 
 ### Phase 0 verification result (2026-07-17, live run against a 76-video playlist)
 
@@ -154,6 +161,42 @@ the loop as fully hardened until #2 lands too. Item #3 (retry) remains unneeded 
 Not yet committed — see `git log` / working tree for current status; commit message will reference
 this section.
 
+### GH-69 (2026-07-23): scripted clicks silently never trigger `get_transcript` — real clicks always do
+
+**This contradicts the 2026-07-17 claim above** ("a real dispatched `computer left_click` fails
+identically to a scripted `.click()`, so it is not a user-activation issue") — flagging the
+contradiction explicitly rather than quietly overwriting it, since the earlier claim is still in
+this file a few paragraphs up. That test appears to have been confounded by the (also real, also
+verified) stale-continuation-token 400 described above — with both problems live at once on
+2026-07-17, a real click could plausibly have failed too, for the *different* reason of hitting a
+stale token, masking any user-activation effect in that particular test.
+
+The 2026-07-23 evidence is more extensive and isolates the variable more cleanly: dozens of
+correctly-targeted scripted-click attempts (`javascript_tool` `.click()`), across multiple unrelated
+videos, with timeouts pushed as high as 90s+, on a fresh page load (GH-68's token can't be stale
+here) — **zero** ever produced a `get_transcript` network request (confirmed via
+`read_network_requests`, not inferred from the DOM). The identical button, on the identical video,
+in the identical session, clicked with a genuine trusted mouse event (a human, or Claude in
+Chrome's `computer` `left_click` tool) worked immediately and reliably every time it was tried,
+including on two videos that had just failed every scripted attempt made against them. Full
+writeup: `docs/GITHUB_ISSUE_69_TRANSCRIPT_PANEL_OPENER_SELECTOR_MISS.md`.
+
+**Practical fix, and it's procedural, not code**: `.claude/skills/harvest-playlist/SKILL.md` and
+`.claude/skills/verify-panel/SKILL.md` now mandate a real `computer` `left_click` to trigger the
+Extract & Save button (and playlist navigation) — never `javascript_tool` or any scripted
+`.click()`/`dispatchEvent`. `content.js` itself cannot detect or route around this from the inside;
+whatever gates the request appears to live in YouTube's own handling, outside the content script's
+control. The `content.js` changes made investigating this (correct button targeting by label
+instead of blind index `[0]`, verifying segments appear before trusting a click, a single-candidate
+patient 35s wait instead of fanning out across multiple different buttons) are real, defensible
+improvements and were kept — but they were not the actual fix for what looked like GH-69's symptom
+in automated testing.
+
+**Not confirmed**: whether this is a deliberate YouTube anti-bot gate on real user activation, some
+effect of very high same-day repeated test traffic against these specific videos, or something
+else. What's reproduced reliably is the practical shape of it — scripted click → silent no-op,
+real click → success — on the same videos/session, both directions.
+
 ## Active initiative: in-page agent-drivable panel
 
 **Full design: `docs/PROJECT-MANIFEST-in-page-panel.md`.** Read it before working on this.
@@ -172,6 +215,7 @@ this section.
 - `data-save-state` is the source of truth the agent polls: `idle → extracting → saving → saved | error`. Must never hang on `saving`.
 - Use an **open** shadow root or scoped/prefixed classes — a *closed* shadow root can hide the panel from the agent's `find`/`read_page`. Validate in Phase 0.
 - Save stays upsert-by-`Video ID` (idempotent; re-click/retry updates, never duplicates).
+- **Trigger the button with a real `computer` `left_click`, never `javascript_tool`/scripted `.click()`** — see GH-69 (2026-07-23) above. A scripted click silently never fires YouTube's `get_transcript` request; a real trusted click works reliably. `javascript_tool` remains correct for all read-only polling.
 
 **Phases**: 0 spike (de-risk CORS path + agent discoverability) → 1 service worker → 2 panel UI → 3 SPA lifecycle → 4 agent-contract hardening → 5 cleanup/cut over (retire `default_popup`, bump to v3.0.0). Core 0–3 ≈ 3–4 days.
 
@@ -182,9 +226,10 @@ this section.
 - **`verify-panel`** (`.claude/skills/verify-panel/`) — acceptance test for the in-page panel with Claude in
   Chrome. Run after any change to `content.js` / `background.js` / `manifest.json`, and at the end of each phase.
   Encodes the method that caught the stale-panel bug (observe before clicking, confirm writes in Airtable,
-  isolate before blaming the video).
+  isolate before blaming the video). Mandates real `computer` clicks (see GH-69 above).
 - **`harvest-playlist`** (`.claude/skills/harvest-playlist/`) — runs the actual agent loop: walk a playlist,
-  save every transcript, report. This is where queue/retry logic lives — never in the extension.
+  save every transcript, report. This is where queue/retry logic lives — never in the extension. Mandates
+  real `computer` clicks (see GH-69 above) — `javascript_tool` is read-only in this loop.
 
 ## What this project is
 

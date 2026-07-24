@@ -22,6 +22,18 @@ The toolbar popup still existing is expected until Phase 5 and is NOT under test
 
 ## Method — the parts that catch real bugs
 
+**Click the button (and the sidebar entries) with a real `computer` `left_click`. Never
+`.click()` it via `javascript_tool` or any scripted DOM method.** Discovered 2026-07-23 (GH-69):
+a scripted click finds the right element and its handler runs, but YouTube's transcript-loading
+path silently never fires the `get_transcript` request — confirmed via `read_network_requests`
+across dozens of scripted attempts on multiple videos, timeouts up to 90s+. A real trusted click on
+the identical button, same video, same session, works immediately. This looks like an
+anti-automation gate on real browser user activation, not a timing or DOM bug — don't try to fix it
+by waiting longer or retrying with more scripted clicks; use `find` for a ref or a screenshot for
+coordinates, then `computer` `left_click`. `javascript_tool` remains the right tool for every
+*read-only* step (checking `data-save-state`, polling for terminal state, reading Airtable) — it
+must just never be what fires the click itself.
+
 **Install a MutationObserver before clicking.** A successful save completes in ~2.7s, faster than one tool round-trip, so polling after the click reads `saved` and teaches you nothing. Observe `document.documentElement` with `subtree:true, attributes:true, attributeFilter:['data-save-state','data-video-id','data-error-msg']`, stash to `window.__phase0log`, then click. Without this you cannot claim the state machine passed *through* `extracting→saving`.
 
 **Navigate by clicking the playlist sidebar. Never use `navigate`.** `navigate` does a full page load and silently voids the SPA-remount test — the exact thing being verified.

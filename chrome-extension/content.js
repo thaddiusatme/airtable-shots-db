@@ -28,66 +28,97 @@ async function waitForSegments(root, timeout = 5000) {
   return collectSegments(root);
 }
 
+function isTranscriptControl(el) {
+  const text = el.textContent?.toLowerCase() || '';
+  const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+  return text.includes('transcript') || ariaLabel.includes('transcript');
+}
+
+// GH-69: pick exactly one plausible trigger, in priority order, rather than
+// collecting every match — see openTranscriptPanel for why only one gets
+// clicked at all.
+function findBestTranscriptButton() {
+  const descriptionButton = document.querySelector(
+    'ytd-video-description-transcript-section-renderer button'
+  );
+  if (descriptionButton && isTranscriptControl(descriptionButton)) return descriptionButton;
+
+  const menuItem = Array.from(
+    document.querySelectorAll('ytd-menu-service-item-renderer, tp-yt-paper-item')
+  ).find(isTranscriptControl);
+  if (menuItem) return menuItem;
+
+  const generic = Array.from(
+    document.querySelectorAll('button, ytd-button-renderer, a[role="button"]')
+  ).find(btn => {
+    const text = btn.textContent?.toLowerCase() || '';
+    const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+    return text.includes('show transcript') || ariaLabel.includes('show transcript');
+  });
+  if (generic) return generic;
+
+  const structured = Array.from(
+    document.querySelectorAll('ytd-structured-description-content-renderer button')
+  ).find(isTranscriptControl);
+  return structured || null;
+}
+
+// GH-69: a click "succeeding" (element existed, .click() ran) is not the same as
+// the transcript panel actually opening — poll for segments before trusting it.
+// The wait is long (35s) because live measurement showed real variance in how
+// long YouTube takes to populate segments after a genuinely correct click: one
+// clean run on a ~20min/1214-segment video took 24s+ to render anything, while
+// an identical clean click on the same video another time produced nothing in
+// 30s. This isn't a selector problem — it's backend-side variance — so a short
+// timeout produces false "not found" negatives on videos that would have
+// succeeded with more patience. An unattended harvest run halts after two
+// consecutive failures, so a slow true success is much cheaper than a false one.
+async function clickAndVerify(el, label, timeout = 35000) {
+  console.log(`Clicking ${label}...`);
+  el.click();
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (collectSegments(document).length > 0) return true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  console.log(`${label} click did not reveal transcript segments`);
+  return false;
+}
+
+// GH-69 (revised): earlier version tried several *different* transcript-
+// trigger buttons in sequence, each with its own long wait, when the first
+// one didn't reveal segments in time. Live testing showed that's the wrong
+// model: if YouTube's backend is just slow, clicking a second button doesn't
+// parallelize a slow response — and clicking while the first request may
+// still be in flight risks colliding with it, the same class of bug as the
+// GH-68 stale-token 400. So: find the single best candidate, click it once,
+// and commit to one patient wait. The only thing worth retrying is the
+// *search* itself — the description section's button can take up to ~1s to
+// render after the page settles — never the click.
 async function openTranscriptPanel() {
   console.log('Attempting to open transcript panel...');
 
-  // Strategy 1: Check if panel is already visible but hidden
+  // Already open from a previous action on this page.
   const existingPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-transcript"]');
   if (existingPanel && existingPanel.getAttribute('visibility') !== 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN') {
     console.log('Transcript panel already visible');
-    return true;
+    return { opened: true, attemptedClick: false };
   }
 
-  // Strategy 2: Look for the three-dot menu button and transcript option
-  // First, try to find "Show transcript" in the description area
-  const descriptionButtons = document.querySelectorAll('ytd-video-description-transcript-section-renderer button');
-  if (descriptionButtons.length > 0) {
-    console.log('Found transcript button in description area, clicking...');
-    descriptionButtons[0].click();
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    return true;
+  let btn = null;
+  for (let i = 0; i < 5; i++) {
+    btn = findBestTranscriptButton();
+    if (btn) break;
+    await new Promise(resolve => setTimeout(resolve, 400));
   }
-  
-  // Strategy 3: Look for menu items (three-dot menu)
-  const menuItems = document.querySelectorAll('ytd-menu-service-item-renderer, tp-yt-paper-item');
-  for (const item of menuItems) {
-    const text = item.textContent?.toLowerCase() || '';
-    if (text.includes('transcript') || text.includes('show transcript')) {
-      console.log('Found transcript in menu item, clicking...');
-      item.click();
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return true;
-    }
+
+  if (!btn) {
+    console.log('Could not find transcript button with any strategy');
+    return { opened: false, attemptedClick: false };
   }
-  
-  // Strategy 4: Generic button search
-  const allButtons = document.querySelectorAll('button, ytd-button-renderer, a[role="button"]');
-  for (const btn of allButtons) {
-    const text = btn.textContent?.toLowerCase() || '';
-    const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-    
-    if (text.includes('show transcript') || ariaLabel.includes('show transcript')) {
-      console.log('Found generic transcript button, clicking...');
-      btn.click();
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return true;
-    }
-  }
-  
-  // Strategy 5: Try engagement panel sections directly
-  const engagementSections = document.querySelectorAll('ytd-structured-description-content-renderer button');
-  for (const btn of engagementSections) {
-    const text = btn.textContent?.toLowerCase() || '';
-    if (text.includes('transcript')) {
-      console.log('Found transcript in structured description, clicking...');
-      btn.click();
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return true;
-    }
-  }
-  
-  console.log('Could not find transcript button with any strategy');
-  return false;
+
+  const opened = await clickAndVerify(btn, 'transcript button');
+  return { opened, attemptedClick: true };
 }
 
 async function extractTranscript() {
@@ -115,17 +146,24 @@ async function extractTranscript() {
     let segments = collectSegments(document);
 
     // If none are present yet, open the panel and poll for lazy-loaded rows.
+    let attemptedClick = false;
     if (segments.length === 0) {
       console.log('No transcript segments yet, attempting to open panel...');
-      const opened = await openTranscriptPanel();
-      if (opened) {
+      const result = await openTranscriptPanel();
+      attemptedClick = result.attemptedClick;
+      if (result.opened) {
         segments = await waitForSegments(document, 5000);
       }
     }
 
     if (segments.length === 0) {
+      // GH-69: distinguish "no transcript control found" from "found and
+      // clicked one, but the panel never revealed segments" — the latter is a
+      // DOM-drift/timing bug, not a page genuinely lacking a transcript.
       return {
-        error: 'Could not find transcript segments. Try manually clicking "Show transcript" first, then extract again.',
+        error: attemptedClick
+          ? 'Found a "Show transcript" control and clicked it, but the transcript panel never revealed any segments. This may be YouTube DOM drift — try reloading the page and extracting again.'
+          : 'Could not find transcript segments. Try manually clicking "Show transcript" first, then extract again.',
         videoId,
         videoTitle
       };

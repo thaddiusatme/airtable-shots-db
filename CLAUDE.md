@@ -230,6 +230,14 @@ real click → success — on the same videos/session, both directions.
 - **`harvest-playlist`** (`.claude/skills/harvest-playlist/`) — runs the actual agent loop: walk a playlist,
   save every transcript, report. This is where queue/retry logic lives — never in the extension. Mandates
   real `computer` clicks (see GH-69 above) — `javascript_tool` is read-only in this loop.
+- **`youtube-panel-triage`** (`.claude/skills/youtube-panel-triage/`) — added 2026-07-23. When extraction
+  fails or looks wrong, distinguishes the three known failure modes (GH-68 stale-token 400, GH-69
+  scripted-click no-op, stale-panel cross-video corruption) via network requests, so a fix isn't attempted
+  against the wrong theory. Run this before writing any panel-related fix.
+- **`diagnose-stuck-automation`** (`.claude/skills/diagnose-stuck-automation/`) — added 2026-07-23.
+  General Claude-in-Chrome checklist (not project-specific) for "click seems to do nothing": coordinate
+  scaling, real-vs-scripted click as a variable, network requests as ground truth, tab-throttling and
+  tool-timeout artifacts. `youtube-panel-triage` defers to this for non-panel-specific click issues.
 
 ## What this project is
 

@@ -42,6 +42,8 @@ must just never be what fires the click itself.
 
 **Never trust `data-save-state: saved`. Confirm the record in Airtable** (Videos `tblpwqMfiMsRsYuMY`, filter `Video ID`) via the Airtable MCP tools. This is what separates "the UI claims success" from evidence. It also gets you two properties for free: upsert idempotency (N saves → 1 record) and that the error path writes no junk rows.
 
+**`error` is not proof of failure either — verify by `Video ID` before declaring one.** The panel lies in *both* directions: a `saved` can be a false positive, and an `error` (or a poll that times out mid-`extracting`/`saving`) can be a false *negative* when the Airtable write already landed. In the panel-state retro (duplicate-record incident), a good record existed but the panel read `error`, so a second run was fired and created a duplicate — which then broke the upsert. Query by `Video ID` before recording any failure; if a record with a non-empty transcript is already there, it's a false alarm, not a NO-GO.
+
 **Check the transcript's CONTENT, not just that it saved.** A `saved` whose `extracting → saving` took ~2ms with no fetch means stale segments from the *previous* video were harvested and written under this video's ID — silent corruption that reports success. Compare length and opening words against the actual video. Treat a sub-100ms extract as guilty until proven innocent.
 
 **A real Airtable write is strong evidence; absence of console CORS errors is weak.** Console tracking only starts when `read_console_messages` is first called — call it early with `clear:true`, but lean on the write.
@@ -61,6 +63,8 @@ must just never be what fires the click itself.
 **`data-save-state: idle` does not mean ready.** The panel remounts on `yt-navigate-finish` while YouTube is still mid-swap: the page title, the description's transcript entry point, and even the previous video's segments can still be stale. Before clicking, also require the page to have settled (e.g. `document.title` reflects the new video). Clicking the instant the panel says `idle` is how you get either the 400 or stale-data corruption.
 
 **Abort, don't click, when preconditions fail.** If the wait for `idle` + matching `data-video-id` times out, report and stop. A script that clicks anyway produced a bogus `saved` that was really the *previous* video re-saved.
+
+**Never re-click Extract after opening the transcript panel by hand.** Manually opening the panel and then clicking Extract is what produced the erroring second run in the duplicate-record incident. If you've touched the panel manually, reload the page fresh before extracting — don't stack a manual open under an agent click.
 
 ## The trap this test exists to catch
 

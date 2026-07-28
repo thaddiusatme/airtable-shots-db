@@ -34,6 +34,22 @@ function isTranscriptControl(el) {
   return text.includes('transcript') || ariaLabel.includes('transcript');
 }
 
+// 2026-07-27 (playlist-harvest retro): tried preferring the "In this video"
+// panel's Transcript tab here, on the theory that YouTube's own client
+// silently retries get_transcript once after a 400 when driven through that
+// tab (confirmed once via a REAL manual click). Reverted same day: re-tested
+// against 2 fresh, never-attempted videos with this code live via the
+// extension's own scripted click, and BOTH produced zero get_transcript
+// network requests at all — not even a 400. That's the GH-69 signature
+// (scripted .click() silently not triggering YouTube's handler) — this tab
+// element apparently needs a real trusted click to do anything, unlike the
+// description button below, which at least fires a (failing) request under
+// a scripted click. So this was a regression, not a fix, for the automated
+// path. No Airtable writes happened either way (verified clean). Left as a
+// documented dead end — the retry-on-400 problem for automated runs is
+// still open; do not re-attempt this exact approach without first getting a
+// real (non-scripted) click to reach this element.
+
 // GH-69: pick exactly one plausible trigger, in priority order, rather than
 // collecting every match — see openTranscriptPanel for why only one gets
 // clicked at all.

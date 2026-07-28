@@ -42,6 +42,28 @@ verify with `getBoundingClientRect` if screen scaling looks off) and `computer` 
 `data-save-state`/`data-video-id`/`data-error-msg`, polling for terminal state, reading
 `location.search`. It must just never be the thing that fires the click.
 
+## CRITICAL: the Airtable write is ground truth, not `data-save-state`
+
+`data-save-state` is a **hint, not proof** — in both directions:
+
+- A `saved` can be a false *positive* (stale/corrupt segments saved under the wrong id — see the
+  provenance warnings below and in `youtube-panel-triage`).
+- An `error` (or a panel still reading `extracting`/`saving` when a tool call times out) can be a
+  false *negative*: the write to Airtable may already have landed before the panel reported failure.
+  This actually happened (the panel-state retro / duplicate-record incident): a good record existed,
+  but the panel showed `error`, so a second run was fired — which created a duplicate and broke the
+  upsert (see next rule).
+
+**Before recording any video as failed, query Airtable by `Video ID`** (Videos `tblpwqMfiMsRsYuMY`,
+base `appWSbpJAxjCyLfrZ`; read id/title fields only, never the full transcript — it blows the
+response limit) and check whether a record already exists with a non-empty transcript. If one does,
+it's a false alarm: record it as saved, do **not** re-run.
+
+**Never re-click Extract after manually opening the transcript panel.** Opening the panel by hand and
+then clicking Extract is exactly what triggered the erroring second run in that incident. If you've
+touched the panel manually, reload the page fresh before any extract — or just verify the existing
+Airtable record instead of re-extracting.
+
 ## Loop
 
 1. **Enumerate the queue once, up front.** From the playlist sidebar:
@@ -52,6 +74,7 @@ verify with `getBoundingClientRect` if screen scaling looks off) and `computer` 
    - Wait for `data-video-id` to equal the new `v=` **and** `data-save-state` to be `idle`. Don't click before both hold, or you'll fire at the previous video's panel.
    - **`idle` is necessary but NOT sufficient — the panel lies.** It remounts on `yt-navigate-finish` while YouTube is still mid-swap. Also wait for the page to settle (`document.title` reflects the new video) and for the previous video's segments to clear. Clicking too early either 400s YouTube's transcript API (permanent spinner → `error`) or harvests the previous video's leftover segments and saves them under this video's ID (**silent corruption**). A couple of seconds of patience per video prevents both.
    - Click the button with `computer` `left_click`, then use `javascript_tool` to poll `data-save-state` until `saved` or `error` (cap ~60s; a successful extraction can legitimately take 30s+ for long videos — don't give up early).
+   - **On `error` (or a timed-out poll), verify by `Video ID` in Airtable before believing it** — the write may have landed anyway (see "the Airtable write is ground truth" above). Only a genuine miss counts as a failure.
    - Record: id, title, terminal state, `data-error-msg`.
 4. **Report a table** at the end: id / title / state / error, plus counts and a list of anything needing a human.
 
@@ -64,6 +87,8 @@ URL/query string**: read `location.search` internally, never return `location.hr
 ## Errors
 
 **`error` is normal and expected sometimes** — plenty of videos genuinely have no transcript. Do not treat it as failure of the run. Record it and move on.
+
+**Verify the Airtable write before retrying.** Query by `Video ID` first — an `error` can be a false negative after a successful save, and re-running against a record that already exists is how the duplicate-record incident happened. Only retry if no good record exists.
 
 **Retry once**, in place, before recording a failure — the panel is idempotent so a retry is free.
 

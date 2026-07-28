@@ -16,6 +16,26 @@ not to register at all.
 **Never write a DOM-level fix for a stuck spinner without doing step 1 first.** All three prior
 DOM-only fix attempts on this panel failed; one silently overwrote a real Airtable record.
 
+## Step 0: is this even a failure? Check Airtable by `Video ID` first
+
+**Before diagnosing *why* extraction "failed", confirm that it did.** `data-save-state` is a hint,
+not ground truth, and it produces false *negatives*: an `error` — or a poll that timed out while the
+panel still read `extracting`/`saving` — can happen *after* the Airtable write already landed. In the
+panel-state retro (duplicate-record incident) a good record already existed, but the panel showed
+`error`, a second run was fired against it, and that created a duplicate — which then broke the
+extension's upsert (upsert fails on multiple matches for one `Video ID`). The triage itself caused the
+damage.
+
+So query Airtable first (Videos `tblpwqMfiMsRsYuMY`, base `appWSbpJAxjCyLfrZ`, filter by `Video ID`,
+id/title fields only — never pull the full transcript):
+
+| Observation | Meaning | Action |
+|---|---|---|
+| A record exists with a non-empty transcript and the right title | **False alarm — the write landed.** Not a failure at all. | Stop here. Do **not** re-run, re-click, or "fix" anything. |
+| No record, or a record with an empty/wrong transcript | A genuine failure — now find out which one | Go to Step 1 |
+
+Only once you've ruled out the false-negative do the three DOM/network failure modes below apply.
+
 ## Step 1: read the network, not the DOM
 
 Call `read_network_requests` (`urlPattern: "get_transcript"`) — start tracking *before* the click

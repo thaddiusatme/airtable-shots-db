@@ -288,9 +288,37 @@ caused the duplicate.
 **Full design: `docs/PROJECT-MANIFEST-click-delivery-redesign.md`.** Triggered by GH-70. Forks into
 two candidate directions — (A) OS-level GUI automation replacing CDP-driven clicks against the
 existing extension, or (B) bypassing the browser/extension entirely via a direct `timedtext` HTTP
-fetch. **Both are gated on a shared Phase 0 diagnostic (not yet run)**: click `ovabeVoWrA0` via a
-zero-CDP OS-level click and see if it succeeds where 6 CDP-driven attempts didn't. Do not start
-building either fork before that diagnostic runs — see the manifest's decision gate (§4).
+fetch. **Both are gated on a shared Phase 0 diagnostic**: click `ovabeVoWrA0` via a zero-CDP
+OS-level click and see if it succeeds where 6 CDP-driven attempts didn't. Do not start building
+either fork before that diagnostic produces a real result — see the manifest's decision gate (§4).
+
+**2026-07-27 — Phase 0 attempted, INCONCLUSIVE. The hypothesis is still untested.** The blocker was
+the diagnostic tool itself, not YouTube: **AppleScript `System Events` → `click at {x,y}` delivers
+no click events to Chrome at all.** Proven, not assumed — a `localStorage`-backed capture-phase
+`click` listener on `document` logged a real physical click (`isTrusted:true`) but logged *nothing*
+for synthetic clicks, both on the Extract & Save button and on plain page content far from it;
+panel stayed `idle` throughout. The same `click at` drives TextEdit correctly (verified by clicking
+into a doc, typing a marker, and reading the text back), so permission and coordinate space were
+fine. Full detail in the manifest §3.
+
+Hard-won environment facts worth not rediscovering:
+- **Digital Color Meter does NOT show x/y** — it only reads pixel color. Compute screen coordinates
+  from the page instead (`getBoundingClientRect()` + `window.screenX/screenY` + chrome-height
+  offset); the script header now carries the snippet.
+- **Docking/undocking DevTools changes the window bounds**, invalidating coordinates computed
+  beforehand; an **undocked DevTools window becomes Chrome's `front window`** for AppleScript.
+- **Accessibility permission is per-process**: native Terminal.app's grant does not extend to
+  Claude Code's embedded terminal.
+- **JS globals don't survive between separate `execute javascript` calls** — use `localStorage`.
+- **Chrome's `execute javascript` via Apple Events is a working CDP-free read-back channel**
+  (needs View > Developer > Allow JavaScript from Apple Events) — genuinely useful for this project,
+  since it inspects the page without attaching the very thing under test.
+
+**Next step: retry the diagnostic with Quartz/CoreGraphics injection via `pyobjc`**
+(`CGEventCreateMouseEvent` + `CGEventPost`), which the research findings already ranked above
+AppleScript AX targeting. Reuse the `localStorage` listener rig as ground truth. The §4 decision
+gate only becomes live if a Quartz click registers on plain page content *and then* fails to
+trigger `get_transcript` at the button.
 
 ## Active initiative: in-page agent-drivable panel
 

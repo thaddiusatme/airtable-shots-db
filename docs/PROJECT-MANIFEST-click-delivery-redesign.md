@@ -8,7 +8,9 @@ Protocol.
 **Triggered by:** `docs/GITHUB_ISSUE_70_CLICK_DELIVERY_UNRELIABLE_CDP_AUTOMATION.md`
 **Informed by:** `docs/RESEARCH_PROMPT_GUI_AUTOMATION_FEASIBILITY.md` +
 `docs/RESEARCH_FINDINGS_GUI_AUTOMATION_FEASIBILITY.md`
-**Status:** Fork A chosen (D2 decided) — Phase 0 diagnostic script ready, awaiting a run
+**Status:** Fork A chosen (D2 decided) — Phase 0 diagnostic **attempted 2026-07-27, inconclusive**:
+AppleScript `click at` delivers no click events to Chrome at all, so the hypothesis was never
+tested. Retry with Quartz/`pyobjc` injection before touching the decision gate — see §3.
 **Last updated:** 2026-07-27
 
 ---
@@ -99,7 +101,55 @@ Run it against **both** `ovabeVoWrA0` (known-failing, 6/6 CDP attempts failed) a
 control video (e.g. `J_jswzXhYJA`, which saved cleanly earlier), so there's a baseline to compare
 against.
 
-**Result:** *(not yet run — fill in before proceeding)*
+**Result (2026-07-27, first attempt): INCONCLUSIVE — blocked by the delivery tool itself, not by
+YouTube.** The diagnostic never got far enough to test the hypothesis. AppleScript's
+`System Events` → `click at {x, y}` **does not deliver click events to Chrome at all** in this
+setup, so there was nothing to observe at the button.
+
+What was established, in order:
+
+1. **Accessibility permission is correctly granted** to `osascript` when run from native Terminal.app
+   (first run errored `-25211 not allowed assistive access`, subsequent runs returned cleanly). Note
+   Claude Code's *embedded* terminal is a different process and does not inherit this grant.
+2. **`click at` genuinely works at the OS level.** Self-verifying control test: opened a TextEdit
+   document, clicked its center via `click at`, typed a marker string, and read the document's text
+   back via AppleScript — marker present. So the mechanism, permission, and coordinate space are all
+   functional against a native app.
+3. **Coordinates were verified correct, repeatedly.** Digital Color Meter does *not* show x/y (the
+   script header is wrong about this — use the `Cmd+Shift+4` crosshair readout or a JXA
+   `NSEvent.mouseLocation` poll instead). Final coordinates were computed from the page itself
+   (`getBoundingClientRect()` + `window.screenX/screenY` + browser-chrome offset) and cross-checked
+   against `bounds of front window`.
+4. **Two window-hygiene traps cost most of the session** and must be avoided on any retry: an
+   **undocked DevTools window** becomes Chrome's `front window` for AppleScript (returned a 640×640
+   window instead of the browser), and window bounds *change* when DevTools docks/undocks, silently
+   invalidating previously-computed coordinates.
+5. **Chrome's `execute javascript` (View > Developer > Allow JavaScript from Apple Events) works**
+   and is the right read-back channel — but **JS globals (`window.__x`) do not persist between
+   separate `execute javascript` calls** (each appears to run in a fresh context; a global set in
+   one call read back `undefined` in the next). Use `localStorage` for any cross-call state.
+6. **Ground truth, via a `localStorage`-backed capture-phase `click` listener on `document`:**
+   - A **real physical click** → logged, `{"x":550,"y":460,"target":"SPAN","trusted":true}`. The
+     listener demonstrably works.
+   - A **`click at` synthetic click on the Extract & Save button** (`1018,1073`) → **empty log**,
+     panel stayed `idle`.
+   - A **`click at` synthetic click on plain page content** (`821,575`, center of page, nowhere near
+     any extension UI) → **empty log**, panel stayed `idle`.
+
+**So: zero click events reach the page's document from `click at`, anywhere on the page, while the
+same mechanism drives TextEdit fine and a real click on the same page logs normally.** This is a
+property of AppleScript `click at` vs. Chrome's render surface — *not* evidence for or against the
+GH-70 hypothesis, which remains untested.
+
+**Next step is to re-run the diagnostic with a different OS-input mechanism before drawing any
+conclusion about CDP.** The research findings already ranked **Quartz/CoreGraphics event injection
+via `pyobjc`** (`CGEventCreateMouseEvent` + `CGEventPost`) *above* AppleScript AX targeting — this
+result is a concrete argument for going there directly. Reuse the verification rig built here as-is:
+the `localStorage` click listener is the ground truth (an empty log means the click never arrived;
+`trusted:true`/`false` distinguishes real from synthetic), and `execute javascript` via AppleScript
+is a working CDP-free read-back channel. Only if a Quartz-injected click *does* register on plain
+page content, but *doesn't* trigger `get_transcript` at the button, does the decision gate in §4
+actually come into play.
 
 ---
 

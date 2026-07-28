@@ -34,12 +34,27 @@
 --      Wait for the floating "Extract & Save" panel (bottom-right) to show
 --      "Idle".
 --   3. Find the button's actual SCREEN coordinates (not page/DOM coordinates
---      — this script clicks a physical point on your display):
---        - Open Digital Color Meter (Cmd+Space, type "Digital Color Meter" —
---          it ships with macOS, in /Applications/Utilities/).
---        - Hover your mouse over the CENTER of the "Extract & Save" button
---          (don't click).
---        - Read the x, y values shown in that app's window.
+--      — this script clicks a physical point on your display). NOTE: Digital
+--      Color Meter does NOT show x/y coordinates (it only reads pixel color);
+--      an earlier version of this comment was wrong about that. Instead, the
+--      most reliable way is to compute it from the page, in the DevTools
+--      console on the target tab:
+--        var el = document.querySelector('[data-testid="extract-save-btn"]');
+--        var r = el.getBoundingClientRect();
+--        JSON.stringify({
+--          x: Math.round(window.screenX + r.x + r.width/2),
+--          y: Math.round(window.screenY
+--               + (window.outerHeight - window.innerHeight)
+--               + r.y + r.height/2)
+--        })
+--      WINDOW HYGIENE (these cost a whole session on 2026-07-27):
+--        - Docking/undocking DevTools CHANGES the window bounds, which
+--          invalidates coordinates computed before the change. Compute the
+--          coordinates in the exact window layout you will click in.
+--        - An UNDOCKED DevTools window becomes Chrome's `front window` for
+--          AppleScript. Verify with:
+--            osascript -e 'tell application "Google Chrome" to get bounds of front window'
+--          and make sure it matches the browser window, not a DevTools panel.
 --
 -- USAGE
 --   osascript phase0_diagnostic_click.applescript <x> <y>
@@ -59,6 +74,32 @@
 -- one video that worked fine before (e.g. J_jswzXhYJA), so we have a
 -- control. Record both results in
 -- docs/PROJECT-MANIFEST-click-delivery-redesign.md Section 3.
+--
+-- ============================================================================
+-- KNOWN LIMITATION — READ BEFORE RUNNING (found 2026-07-27)
+-- ============================================================================
+-- This script's `click at` DOES NOT WORK against Chrome. It was run against
+-- ovabeVoWrA0 with verified-correct coordinates and confirmed Accessibility
+-- permission, and produced ZERO click events on the page — verified with a
+-- capture-phase click listener that successfully logged a real physical click
+-- (isTrusted:true) moments earlier. The same `click at` drives TextEdit
+-- correctly, so the permission and coordinate space are fine; the events just
+-- don't reach Chrome's render surface.
+--
+-- Therefore this script CANNOT currently answer the GH-70 question, and a
+-- null result from it means nothing about YouTube or CDP. Next attempt should
+-- use Quartz/CoreGraphics injection via pyobjc (CGEventCreateMouseEvent +
+-- CGEventPost), which the research findings already ranked higher.
+--
+-- Verification rig that DOES work, and is worth reusing (CDP-free):
+--   Install a listener (persist to localStorage — JS globals do NOT survive
+--   between separate `execute javascript` calls):
+--     osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "localStorage.setItem(\"clickLog\", JSON.stringify([])); document.addEventListener(\"click\", function(e){ var l = JSON.parse(localStorage.getItem(\"clickLog\")||\"[]\"); l.push({x:e.clientX,y:e.clientY,target:e.target.tagName,trusted:e.isTrusted}); localStorage.setItem(\"clickLog\", JSON.stringify(l)); }, true); \"ok\""'
+--   Read it back after a click attempt:
+--     osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "localStorage.getItem(\"clickLog\")"'
+--   Requires: Chrome > View > Developer > Allow JavaScript from Apple Events.
+--   An empty array means the click never arrived at the page at all.
+-- ============================================================================
 
 on run argv
 	if (count of argv) is not 2 then

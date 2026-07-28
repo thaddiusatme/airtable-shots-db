@@ -22,6 +22,7 @@ PREREQUISITES
 THE LADDER (run in this order — do not skip step 1)
     ./scripts/phase0_quartz_click.py trusted          # is Accessibility granted?
     ./scripts/phase0_quartz_click.py probe            # install the click listener
+    ./scripts/phase0_quartz_click.py calibrate        # MEASURE the screen offset
     ./scripts/phase0_quartz_click.py coords 'h1'      # screen coords of an element
     ./scripts/phase0_quartz_click.py click X Y        # inject the click
     ./scripts/phase0_quartz_click.py read             # what did the page see?
@@ -208,6 +209,150 @@ def cmd_read():
     return 0
 
 
+CAL_KEY = "gh70Calib"
+
+
+def cmd_calibrate():
+    """Measure the page-origin offset in screen space by MOVING the cursor only.
+
+    Do not trust `window.screenY + (outerHeight - innerHeight)`. On at least one
+    real window here that expression went NEGATIVE (outerHeight < innerHeight),
+    which would place the click ~100px above the intended target -- i.e. on some
+    other control entirely. Fullscreen/immersive states and multi-display setups
+    all break it.
+
+    This posts a mousemove (no buttons, so nothing can be activated) to a known
+    screen point and asks the page where it thinks the cursor is. The difference
+    is the true offset, measured rather than derived."""
+    install = """(function(){
+      if (!window.__gh70MoveInstalled) {
+        window.__gh70MoveInstalled = true;
+        document.addEventListener('mousemove', function(e){
+          localStorage.setItem(%s, JSON.stringify({cx: e.clientX, cy: e.clientY}));
+        }, true);
+      }
+      localStorage.removeItem(%s);
+      return JSON.stringify({sx: window.screenX, sy: window.screenY,
+                             vw: window.innerWidth, vh: window.innerHeight});
+    })()""" % (json.dumps(CAL_KEY), json.dumps(CAL_KEY))
+    geo = json.loads(chrome_js(install))
+
+    def sample(tx, ty):
+        chrome_js("localStorage.removeItem(%s)" % json.dumps(CAL_KEY))
+        start = cursor_position()
+        post(kCGEventMouseMoved, tx, ty)
+        time.sleep(0.4)
+        raw = chrome_js("localStorage.getItem(%s) || ''" % json.dumps(CAL_KEY))
+        post(kCGEventMouseMoved, *start)
+        return json.loads(raw) if raw else None
+
+    # TWO points, far apart. One point only yields a translation, and that is not
+    # enough: page zoom (and display scaling) make this an affine map, not a
+    # shift. Measured live at 90% zoom, a single-point offset drifted by ~90px
+    # across the viewport -- enough to hit a neighbouring control and misreport
+    # the result as "the click did nothing".
+    p1 = sample(geo["sx"] + 300, geo["sy"] + 700)
+    p2 = sample(geo["sx"] + 1000, geo["sy"] + 900)
+    if not p1 or not p2:
+        print("NO mousemove seen by the page (one or both probes).")
+        print("Chrome is probably not frontmost, or the points fall outside the window.")
+        return 1
+
+    dsx, dcx = 700.0, float(p2["cx"] - p1["cx"])
+    dsy, dcy = 200.0, float(p2["cy"] - p1["cy"])
+    if not dcx or not dcy:
+        print("degenerate calibration (no movement registered on an axis)")
+        return 1
+    # client = (screen - origin) * scale   =>   screen = origin + client / scale
+    scale_x, scale_y = dcx / dsx, dcy / dsy
+    origin_x = (geo["sx"] + 300) - p1["cx"] / scale_x
+    origin_y = (geo["sy"] + 700) - p1["cy"] / scale_y
+
+    cal = {"ox": origin_x, "oy": origin_y, "sx": scale_x, "sy": scale_y}
+    chrome_js("localStorage.setItem(%s, %s)" % (
+        json.dumps(CAL_KEY + "Offset"), json.dumps(json.dumps(cal))))
+    print(json.dumps({"originX": round(origin_x, 1), "originY": round(origin_y, 1),
+                      "scaleX": round(scale_x, 4), "scaleY": round(scale_y, 4),
+                      "impliedZoom": round(1 / scale_x, 3),
+                      "viewport": [geo["vw"], geo["vh"]]}, indent=2))
+    if abs(scale_x - 1) > 0.01:
+        print("\nNOTE: scale != 1, so this tab is not at 100%% zoom (implied %d%%).\n"
+              "That is handled, but it also means any coordinate computed WITHOUT\n"
+              "this calibration is wrong." % round(100 / scale_x))
+    print("\nCalibration stored. Re-run after zooming, moving or resizing the\n"
+          "window, or after docking/undocking DevTools.")
+    return 0
+
+
+def ensure_focus(verbose=True):
+    """Make sure the PAGE has focus before a real click is injected.
+
+    macOS click-to-focus: when the window is not key, the first mouse-down is
+    consumed activating it and never reaches page content. `activate` alone does
+    NOT fix this -- observed live with AXFrontmost=true, AXFocused=false and
+    document.hasFocus()=false, where a click on a button did nothing at all.
+
+    That failure is indistinguishable by eye from "the site ignored the click",
+    and it is almost certainly what made an earlier run of this diagnostic look
+    like a YouTube behaviour. So: verify focus, and if it is missing, spend a
+    throwaway click on a NON-INTERACTIVE point to take it, then re-verify."""
+    if json.loads(chrome_js("String(document.hasFocus())")) is True:
+        return True
+    # Find a point that hits nothing clickable, so the focus click is inert.
+    script = """(function(){
+      var cal = JSON.parse(localStorage.getItem('gh70CalibOffset') || 'null');
+      if (!cal) return 'null';
+      var ys = [0.3, 0.5, 0.7, 0.2, 0.8];
+      for (var i = 0; i < ys.length; i++) {
+        for (var xf = 0.02; xf <= 0.08; xf += 0.03) {
+          var cx = Math.round(window.innerWidth * xf), cy = Math.round(window.innerHeight * ys[i]);
+          var el = document.elementFromPoint(cx, cy);
+          if (!el) continue;
+          if (el.closest('a, button, input, select, textarea, [role=button], [role=link], [onclick], tp-yt-paper-button, yt-icon-button')) continue;
+          return JSON.stringify({sx: Math.round(cal.ox + cx / cal.sx), sy: Math.round(cal.oy + cy / cal.sy),
+                                 tag: el.tagName});
+        }
+      }
+      return 'null';
+    })()"""
+    spot = json.loads(chrome_js(script))
+    if not spot:
+        print("WARNING: page lacks focus and no inert point was found to take it.")
+        print("Click somewhere harmless in the window yourself, then re-run.")
+        return False
+    if verbose:
+        print("page had no focus - taking it with an inert click on %s" % spot["tag"])
+    click(spot["sx"], spot["sy"], restore=False)
+    time.sleep(0.5)
+    ok = json.loads(chrome_js("String(document.hasFocus())")) is True
+    if not ok:
+        print("WARNING: still no focus after the inert click.")
+    return ok
+
+
+def cmd_js(script):
+    """Ad-hoc CDP-free evaluation in the front tab. Read-only by convention."""
+    print(chrome_js(script))
+    return 0
+
+
+def cmd_scroll(selector):
+    """Bring an element into the viewport before clicking it.
+
+    A CGEvent click lands at a SCREEN point, so an element that is scrolled out
+    of view cannot be clicked no matter what getBoundingClientRect reports. Scroll
+    first, let it settle, then recompute coords -- never reuse coords from before
+    a scroll."""
+    script = """(function(){
+      var el = document.querySelector(%s);
+      if (!el) return 'no element matches selector';
+      el.scrollIntoView({block: 'center', behavior: 'instant'});
+      return 'scrolled ' + el.tagName + ' into view';
+    })()""" % json.dumps(selector)
+    print(chrome_js(script))
+    return 0
+
+
 def cmd_perf(needle="get_transcript"):
     """Did the page issue a matching request? Ground truth WITHOUT CDP.
 
@@ -240,24 +385,23 @@ def cmd_perf(needle="get_transcript"):
 def cmd_coords(selector):
     """Screen-space center point of the first element matching `selector`."""
     script = """(function(){
-      // Rough zoom guard. outerWidth/innerWidth is not exact (scrollbars, window
-      // chrome), so this only catches a clearly-wrong zoom; the ratio is reported
-      // either way so a near-miss is visible rather than silently skewing coords.
-      var zoomRatio = window.outerWidth / window.innerWidth;
-      if (Math.abs(zoomRatio - 1) > 0.1) {
-        return JSON.stringify({error: 'page zoom looks wrong (ratio ' + zoomRatio.toFixed(3) + ') - coords would be off'});
-      }
       var el = document.querySelector(%s);
       if (!el) return JSON.stringify({error: 'no element matches selector'});
       var r = el.getBoundingClientRect();
-      if (!r.width && !r.height) return JSON.stringify({error: 'element has zero size'});
-      var chromeH = window.outerHeight - window.innerHeight;
+      if (!r.width && !r.height) return JSON.stringify({error: 'element has zero size (hidden or collapsed) - reveal it first'});
+      if (r.top < 0 || r.bottom > window.innerHeight) return JSON.stringify({error: 'element is outside the viewport - scroll it into view first'});
+      // REQUIRE the measured calibration. The derived expression
+      // screenY + (outerHeight - innerHeight) went negative on a real window
+      // here and was 77px wrong; guessing silently is how you click the wrong
+      // control and then blame the site.
+      var cal = null;
+      try { cal = JSON.parse(localStorage.getItem('gh70CalibOffset') || 'null'); } catch (e) {}
+      if (!cal || !cal.sx) return JSON.stringify({error: 'not calibrated - run `calibrate` first'});
       return JSON.stringify({
-        x: Math.round(window.screenX + r.left + r.width / 2),
-        y: Math.round(window.screenY + chromeH + r.top + r.height / 2),
+        x: Math.round(cal.ox + (r.left + r.width / 2) / cal.sx),
+        y: Math.round(cal.oy + (r.top + r.height / 2) / cal.sy),
         w: Math.round(r.width), h: Math.round(r.height),
-        tag: el.tagName, label: el.getAttribute('aria-label'),
-        zoomRatio: Number(zoomRatio.toFixed(3))
+        tag: el.tagName, label: el.getAttribute('aria-label')
       });
     })()""" % json.dumps(selector)
     out = json.loads(chrome_js(script))
@@ -278,10 +422,22 @@ def main(argv):
         return cmd_trusted()
     if cmd == "probe":
         return cmd_probe()
+    if cmd == "calibrate":
+        return cmd_calibrate()
     if cmd == "read":
         return cmd_read()
     if cmd == "perf":
         return cmd_perf(argv[2] if len(argv) > 2 else "get_transcript")
+    if cmd == "js":
+        if len(argv) < 3:
+            print("usage: js <javascript>")
+            return 2
+        return cmd_js(argv[2])
+    if cmd == "scroll":
+        if len(argv) < 3:
+            print("usage: scroll <css-selector>")
+            return 2
+        return cmd_scroll(argv[2])
     if cmd == "coords":
         if len(argv) < 3:
             print("usage: coords <css-selector>")
@@ -292,6 +448,10 @@ def main(argv):
             print("usage: click <x> <y>")
             return 2
         x, y = float(argv[2]), float(argv[3])
+        if not ensure_focus():
+            print("ABORTED: refusing to click without page focus - the click would\n"
+                  "be swallowed by window activation and look like a site failure.")
+            return 1
         start = click(x, y)
         print("posted move+down+up at (%g, %g); cursor restored to (%g, %g)" % (x, y, *start))
         print("now run:  ./scripts/phase0_quartz_click.py read")

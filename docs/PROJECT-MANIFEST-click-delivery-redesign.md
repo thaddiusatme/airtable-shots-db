@@ -8,9 +8,10 @@ Protocol.
 **Triggered by:** `docs/GITHUB_ISSUE_70_CLICK_DELIVERY_UNRELIABLE_CDP_AUTOMATION.md`
 **Informed by:** `docs/RESEARCH_PROMPT_GUI_AUTOMATION_FEASIBILITY.md` +
 `docs/RESEARCH_FINDINGS_GUI_AUTOMATION_FEASIBILITY.md`
-**Status:** Fork A chosen (D2 decided) — Phase 0 diagnostic **attempted 2026-07-27, inconclusive**:
-AppleScript `click at` delivers no click events to Chrome at all, so the hypothesis was never
-tested. Retry with Quartz/`pyobjc` injection before touching the decision gate — see §3.
+**Status:** Fork A chosen (D2 decided) — Phase 0 diagnostic **RUN 2026-07-27, positive leg complete**:
+a zero-CDP OS-level click (Quartz/CoreGraphics via ctypes) succeeded end-to-end on `ovabeVoWrA0`,
+the video that failed 6/6 CDP delivery attempts. One control is still outstanding before the gate
+is fully settled — see §3.1.
 **Last updated:** 2026-07-27
 
 ---
@@ -150,6 +151,82 @@ the `localStorage` click listener is the ground truth (an empty log means the cl
 is a working CDP-free read-back channel. Only if a Quartz-injected click *does* register on plain
 page content, but *doesn't* trigger `get_transcript` at the button, does the decision gate in §4
 actually come into play.
+
+### 3.1 Second attempt (2026-07-27, same day): Quartz injection — POSITIVE
+
+**The retry above was run and it worked.** Tool: `scripts/phase0_quartz_click.py` — Quartz/
+CoreGraphics (`CGEventCreateMouseEvent` + `CGEventPost` on `kCGHIDEventTap`) bound through
+**ctypes**, not `pyobjc`. pyobjc has no wheel for the Python 3.14 here and `--target` installs fight
+PEP 668; ctypes needs no install at all, and pyobjc is only a wrapper over these same C functions.
+
+**Result on `ovabeVoWrA0` — the 6/6-CDP-failure video — with zero CDP attached:**
+
+| Step | Outcome |
+|---|---|
+| Quartz click on plain page content | logged, `isTrusted:true` — **the tool works** (AppleScript logged nothing here) |
+| Quartz click on description expander | landed exactly on `TP-YT-PAPER-BUTTON#expand`, description expanded |
+| Quartz click on YouTube's native **Show transcript** | **`get_transcript` fired** (308ms) → **2342 segments** |
+| Quartz click on the extension's **Extract & Save** | `idle → saving → saved` in 16s |
+| Airtable verification | `rec5uUvvw2CTFBeyI`, **one** record, correct title/channel/language, transcript truncated at exactly 100k by the GH-64 shim |
+
+So a real OS-level click succeeds end-to-end on the video that resisted six CDP-driven attempts.
+
+**Two prior theories die here:**
+- **ASR-only captions are NOT a sufficient cause of failure.** `ovabeVoWrA0` has a single `"kind":"asr"`
+  English track and no manual track — the exact profile CLAUDE.md's 2026-07-27 addendum blamed for a
+  clean 3-for-3 failure split — and it extracted 2342 segments without complaint. Whatever that
+  correlation was, caption-track type alone does not explain it.
+- **The AppleScript "no events reach Chrome" conclusion needs a caveat** — see the focus trap below.
+  `click at` may have been defeated by the same thing, not by anything intrinsic to AppleScript.
+
+#### The confound that nearly produced a false positive — macOS click-to-focus
+
+Mid-run, clicks silently stopped arriving: a click on **Show transcript** produced no listener entry,
+no `get_transcript`, and no panel change — a *textbook* "site ignored the click" signature. It was
+wrong. `document.hasFocus()` was `false` while `AXFrontmost=true`, `AXMain=true`, no sheets, and
+`osascript activate` had been called. **The first mouse-down after the window loses focus is consumed
+activating it and never reaches page content.** Three repeat clicks then logged normally.
+
+Discriminator that isolated it: **mouse *motion* still reached the page while clicks did not** —
+`calibrate` (which posts `kCGEventMouseMoved` only) kept working throughout. Motion routes by cursor
+location; button events need a key window.
+
+This is now guarded in the tool — `click` calls `ensure_focus()` first, verifies `document.hasFocus()`,
+and if absent spends a throwaway click on a point where `elementFromPoint` hits nothing interactive,
+then re-verifies. **Any future null result from this diagnostic is meaningless unless focus was
+verified at click time.** It is entirely plausible this trap contaminated earlier manual/AppleScript
+attempts, including §3's.
+
+#### Coordinate mapping is affine, not a translation
+
+`window.screenY + (outerHeight - innerHeight)` is wrong and went **negative** (−24) on a real window.
+Cause: `outerHeight` is in physical points, `innerHeight` in CSS px — a unit mismatch, not a bug.
+The tab was at **90% zoom**, making screen→client a scale of **1.111**, so a single-point offset was
+77px off at the calibration point and drifted further across the viewport — easily enough to hit a
+neighbouring control and misread it as a failed click.
+
+`calibrate` therefore measures **two** widely-separated points by mouse motion and solves for scale
+*and* origin; `coords` refuses to run without it rather than guessing.
+
+#### Apple Events JS runs in an ISOLATED world
+
+`document`, `localStorage` and `performance` all work, but **page globals do not exist**:
+`ytInitialPlayerResponse`, `ytcfg` and `ytd` were all `undefined` while `document.querySelector`
+happily found `ytd-watch-flexy`. Caption-track type must be scraped out of the inline `<script>`
+text instead. This is a stronger statement than §3's "globals don't persist between calls" — the
+page's own globals are never visible at all.
+
+Corollary win: **Resource Timing (`performance.getEntriesByType('resource')`) is a CDP-free
+substitute for `read_network_requests`** — it detects whether `get_transcript` was requested without
+attaching the debugger that is the variable under test. It carries no status code, so a hit proves
+the request happened, not that it succeeded.
+
+#### What is still outstanding
+
+The positive leg is done; the **negative control is not**. We did not re-run a CDP-driven click on
+`ovabeVoWrA0` in this same session to watch it fail. Without that, "OS click works" and "CDP click
+fails" are separated by hours and by the focus confound above, so the causal attribution to CDP is
+supported but not proven. Run that control before treating Fork A's premise as established.
 
 ---
 

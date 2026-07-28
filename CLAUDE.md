@@ -292,33 +292,56 @@ fetch. **Both are gated on a shared Phase 0 diagnostic**: click `ovabeVoWrA0` vi
 OS-level click and see if it succeeds where 6 CDP-driven attempts didn't. Do not start building
 either fork before that diagnostic produces a real result — see the manifest's decision gate (§4).
 
-**2026-07-27 — Phase 0 attempted, INCONCLUSIVE. The hypothesis is still untested.** The blocker was
-the diagnostic tool itself, not YouTube: **AppleScript `System Events` → `click at {x,y}` delivers
-no click events to Chrome at all.** Proven, not assumed — a `localStorage`-backed capture-phase
-`click` listener on `document` logged a real physical click (`isTrusted:true`) but logged *nothing*
-for synthetic clicks, both on the Extract & Save button and on plain page content far from it;
-panel stayed `idle` throughout. The same `click at` drives TextEdit correctly (verified by clicking
-into a doc, typing a marker, and reading the text back), so permission and coordinate space were
-fine. Full detail in the manifest §3.
+**2026-07-27 — Phase 0 RUN, positive leg complete. A zero-CDP OS-level click works on the video that
+resisted 6 CDP attempts.** Tool: `scripts/phase0_quartz_click.py` (Quartz `CGEventCreateMouseEvent`
++ `CGEventPost` via **ctypes** — no pyobjc, which has no wheel for the Python 3.14 here; ctypes needs
+no install and pyobjc only wraps these same C functions). The earlier AppleScript attempt was blocked
+by its own tooling; this one was not.
 
-Hard-won environment facts worth not rediscovering:
-- **Digital Color Meter does NOT show x/y** — it only reads pixel color. Compute screen coordinates
-  from the page instead (`getBoundingClientRect()` + `window.screenX/screenY` + chrome-height
-  offset); the script header now carries the snippet.
-- **Docking/undocking DevTools changes the window bounds**, invalidating coordinates computed
-  beforehand; an **undocked DevTools window becomes Chrome's `front window`** for AppleScript.
-- **Accessibility permission is per-process**: native Terminal.app's grant does not extend to
-  Claude Code's embedded terminal.
-- **JS globals don't survive between separate `execute javascript` calls** — use `localStorage`.
-- **Chrome's `execute javascript` via Apple Events is a working CDP-free read-back channel**
-  (needs View > Developer > Allow JavaScript from Apple Events) — genuinely useful for this project,
-  since it inspects the page without attaching the very thing under test.
+On `ovabeVoWrA0`, zero CDP attached: click on plain content logged `isTrusted:true`; click on
+YouTube's native **Show transcript** fired `get_transcript` (308ms) → **2342 segments**; click on the
+extension's **Extract & Save** went `idle → saving → saved` in 16s; **verified in Airtable** as
+`rec5uUvvw2CTFBeyI` — one record, correct title/channel/language, transcript truncated at exactly
+100k by the GH-64 shim. Full detail in the manifest §3.1.
 
-**Next step: retry the diagnostic with Quartz/CoreGraphics injection via `pyobjc`**
-(`CGEventCreateMouseEvent` + `CGEventPost`), which the research findings already ranked above
-AppleScript AX targeting. Reuse the `localStorage` listener rig as ground truth. The §4 decision
-gate only becomes live if a Quartz click registers on plain page content *and then* fails to
-trigger `get_transcript` at the button.
+**This kills the ASR-only theory as a sufficient cause.** `ovabeVoWrA0` has a single `"kind":"asr"`
+track and no manual one — the exact profile the addendum above blames for a 3-for-3 failure split —
+and it extracted cleanly. Caption-track type alone does not explain those failures. (The fresh-tab
+theory is untouched by this run; this was a fresh tab.)
+
+**Read this before trusting ANY null result from a click diagnostic — macOS click-to-focus.**
+Mid-run, clicks silently stopped arriving and produced a textbook "site ignored the click" signature:
+no listener entry, no `get_transcript`, panel unchanged. It was an artifact. `document.hasFocus()`
+was `false` while `AXFrontmost=true`, `AXMain=true`, no sheets, and after `activate` — **the first
+mouse-down after a window loses focus is consumed activating it and never reaches page content.**
+The discriminator: mouse *motion* still reached the page while clicks did not (motion routes by
+cursor location; button events need a key window). `phase0_quartz_click.py click` now calls
+`ensure_focus()` and refuses to click without verified focus. This may well have contaminated the
+AppleScript attempt too.
+
+Other hard-won environment facts:
+- **Coordinate mapping is affine, not a translation.** `window.screenY + (outerHeight - innerHeight)`
+  went **negative** — `outerHeight` is physical points, `innerHeight` is CSS px. At 90% page zoom the
+  screen→client scale was 1.111, so a single-point offset was 77px off and drifted across the
+  viewport. `calibrate` measures two separated points by mouse motion and solves scale + origin;
+  `coords` refuses to run uncalibrated.
+- **Apple Events `execute javascript` runs in an ISOLATED world** — `ytInitialPlayerResponse`,
+  `ytcfg`, `ytd` are all `undefined`, though `document`/`localStorage`/`performance` work fine.
+  Caption-track type has to be scraped from the inline `<script>` text. (Stronger than the earlier
+  "globals don't persist between calls" note: page globals are never visible at all.)
+- **`performance.getEntriesByType('resource')` is a CDP-free substitute for `read_network_requests`** —
+  detects whether `get_transcript` was requested without attaching the debugger under test. No status
+  code, so a hit proves the request happened, not that it succeeded.
+- **Accessibility permission**: `AXIsProcessTrusted` returned **true** for Claude Code's own process
+  here, so the earlier "Terminal.app's grant does not extend to it" note no longer holds. Check, don't
+  assume.
+- **Digital Color Meter does NOT show x/y**; docking/undocking DevTools changes window bounds, and an
+  undocked DevTools window becomes Chrome's `front window` for AppleScript.
+
+**Next step — the missing negative control.** We never re-ran a *CDP-driven* click on `ovabeVoWrA0`
+in the same session to watch it fail. Until that runs, "OS click works" and "CDP click fails" are
+separated by hours and by the focus confound, so Fork A's premise is supported but not proven. Run
+that control before building on it.
 
 ## Active initiative: in-page agent-drivable panel
 

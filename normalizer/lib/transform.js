@@ -10,6 +10,41 @@ const TranscriptUtils = require(
 );
 const { parseSrt } = require('./srt-parser');
 
+// Channels are keyed on `Channel Handle`, and every one of the 87 rows that
+// already exist is in "@handle" form — NOT the UC... id. That's because
+// chrome-extension/content.js derives it from the video owner link with
+// /\/@([^/?]+)/ and YouTube renders that link as /@handle. Apify, by contrast,
+// always reports channelId as UC.... Keying on channelId (as this file
+// originally did, and as docs/NORMALIZER-MANIFEST.md still claimed) therefore
+// never matches an existing row: every sweep would fork the Channels table and
+// link swept videos to a new Track-less orphan, invisible in the AIHS working
+// view. Verified against live data 2026-07-29.
+//
+// So derive the same key the extension does, from the same URL, with the same
+// regex — that's the only way to guarantee byte-identical keys.
+const HANDLE_FROM_URL = /\/@([^/?]+)/;
+
+function toHandleKey(item) {
+  const username = typeof item.channelUsername === 'string' ? item.channelUsername.trim() : '';
+  if (username) return username.startsWith('@') ? username : `@${username}`;
+
+  const fromUrl = HANDLE_FROM_URL.exec(item.channelUrl || '');
+  if (fromUrl) return `@${fromUrl[1]}`;
+
+  return null;
+}
+
+// Apify can return several subtitle tracks. Taking [0] blindly stores a
+// non-English transcript under whatever language happened to come first, which
+// fails silently — prefer an en* track and fall back only if there isn't one.
+function pickSubtitle(subtitles) {
+  if (!Array.isArray(subtitles) || subtitles.length === 0) return null;
+  const english = subtitles.find(
+    (s) => typeof s?.language === 'string' && s.language.toLowerCase().startsWith('en')
+  );
+  return english || subtitles[0];
+}
+
 // Build { createOnlyFields, updateFields, channel, warnings } from one Apify
 // dataset item. Never throws — items missing subtitles still produce a
 // Video row (just without transcript fields), since Triage can't happen
@@ -22,7 +57,7 @@ function buildVideoFields(item) {
     return { skipped: 'item has no video id', item };
   }
 
-  const subtitle = Array.isArray(item.subtitles) ? item.subtitles[0] : null;
+  const subtitle = pickSubtitle(item.subtitles);
 
   const createOnlyFields = {
     'Video Title': item.title || '',
@@ -33,13 +68,15 @@ function buildVideoFields(item) {
     'Intake Source': 'Sweep',
   };
 
-  if (item.thumbnailUrl) {
-    createOnlyFields['Thumbnail URL'] = item.thumbnailUrl;
-    createOnlyFields['Thumbnail (Image)'] = [{ url: item.thumbnailUrl }];
-  }
+  // Always set a thumbnail. chrome-extension/background.js derives this URL
+  // unconditionally, so a blank thumbnail is a shape the proven path could
+  // never produce — don't let a missing actor field introduce one.
+  const thumbnailUrl = item.thumbnailUrl || `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`;
+  createOnlyFields['Thumbnail URL'] = thumbnailUrl;
+  createOnlyFields['Thumbnail (Image)'] = [{ url: thumbnailUrl }];
 
   const updateFields = {
-    'Transcript Source': 'Apify',
+    'Transcript Source': 'apify-youtube-scraper',
   };
 
   if (subtitle?.language) {
@@ -79,12 +116,20 @@ function buildVideoFields(item) {
     }
   }
 
+  const handleKey = toHandleKey(item);
+  if (!handleKey && item.channelId) {
+    warnings.push(
+      `no @handle derivable from channelUsername/channelUrl — Channel will be keyed on the UC id (${item.channelId}), which will NOT match the existing @handle-keyed rows`
+    );
+  }
+
   return {
     videoId: item.id,
     createOnlyFields,
     updateFields,
     channel: {
-      channelId: item.channelId,
+      handleKey,
+      fallbackKey: item.channelId || null,
       channelName: item.channelName,
       channelUrl: item.channelUrl,
     },

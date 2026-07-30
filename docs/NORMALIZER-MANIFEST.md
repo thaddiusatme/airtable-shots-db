@@ -1,0 +1,162 @@
+# Normalizer Project Manifest — Apify → Airtable
+
+Handoff doc for finishing the Apify capture pivot in a fresh Claude Code session. Read this
+first; it links back to `CLAUDE.md` and `docs/archive/FINDINGS-youtube-automation.md` for the
+"why" behind decisions already made. This file covers only the normalizer build — capture
+architecture and the browser-extension retirement are in the repo `CLAUDE.md`.
+
+**Status as of 2026-07-29 (built in a Cowork session, no outbound network in that sandbox — the
+code is written and unit-tested, but has never actually hit the live Apify/Airtable APIs).**
+That's the single most important open item — see "Next step, in order" below.
+
+## What exists now
+
+```
+normalizer/
+├── package.json              — scripts: test, harvest
+├── apify-harvest.js           — the CLI entrypoint
+└── lib/
+    ├── apify-client.js        — runActorSync() against streamers/youtube-scraper
+    ├── airtable-client.js     — countQueued, upsertChannel, upsertVideo (find-or-create/upsert)
+    ├── transform.js           — Apify dataset item -> Airtable fields
+    ├── transform.test.js
+    ├── srt-parser.js          — parses Apify's non-standard inline SRT into {text, start}
+    ├── srt-parser.test.js
+    └── __fixtures__/
+        └── qdRw7oHDXJw.srt.txt  — real captured sample, trimmed, used by both test files
+```
+
+Run `cd normalizer && npm test` — 14 tests, all passing as of last run. These are pure unit
+tests (fixture-based); they do not touch the network.
+
+`.gitignore` had a blanket `lib/` rule that was silently swallowing `normalizer/lib/` (the same
+trap `chrome-extension/lib/` hit once before — see git history). Already fixed: negation lines
+added for `normalizer/lib/` alongside the existing `chrome-extension/lib/` ones. Verify with
+`git status --porcelain normalizer/` before assuming any new file under `normalizer/lib/` is
+tracked-by-default — it will be, but double check if you add a new top-level ignore rule later.
+
+Credentials are in `.env` at repo root (gitignored, not committed): `APIFY_TOKEN`,
+`AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`. Already populated — no need to re-request tokens unless
+they've since been rotated.
+
+Airtable schema change already applied live (not just in code): `Videos` has a new `Intake
+Source` singleSelect field (`fldmKbQYo8YoMWMT4`, options `Watch Later` / `Sweep`) — the guardrail
+CLAUDE.md called for, to let triage be stricter on unattended-sweep videos.
+
+## Verified facts about the Apify actor (streamers/youtube-scraper, h7sDV53CddomktSi5)
+
+Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v=qdRw7oHDXJw`,
+2026-07-29). **Not yet confirmed in channel-sweep mode** — see open items.
+
+- `run-sync-get-dataset-items` endpoint works and returns dataset items directly — no
+  run-then-poll-then-fetch-dataset needed for small bounded runs.
+- Field mapping used in `transform.js`, all confirmed against real output:
+  `id`→Video ID, `title`→Video Title, `url`→Video URL, `thumbnailUrl`→Thumbnail URL/(Image),
+  `channelId`→Channel Handle (the `UC...` id — **not** `channelUsername`, matches how the
+  existing Chrome extension already keys Channels), `channelName`→Channel Name,
+  `channelUrl`→Channel URL.
+- Subtitles are delivered **inline** in the dataset item at `subtitles[0]`, not via a KVS file
+  URL — `srtUrl` was `null` in both probes because `saveSubsToKVS: false`. This resolves the
+  open question in repo `CLAUDE.md` GH-65: no KVS fetch/retention-expiry handling needed, at
+  least not for the volumes this normalizer is scoped to. Worth revisiting only if very long
+  videos push the inline payload into some undocumented actor-side size limit — not observed yet.
+- `subtitlesFormat: "plaintext"` returns one continuous blob with **no per-cue timing** — useless
+  for `Transcript (Timestamped)`. Must request `subtitlesFormat: "srt"` (what `apify-harvest.js`
+  does).
+- The SRT `subtitles[0].srt` field is **not standard SRT**:
+  1. Timestamp fields aren't zero-padded (`00:04:2,560`, not `00:04:02,560`). A standard SRT
+     parser/regex expecting exactly 2 digits per field will misparse these lines.
+  2. Every real caption cue is immediately followed (or, at the very end of the transcript,
+     sometimes preceded) by a near-duplicate "shadow" cue whose text is a single space — an
+     artifact of YouTube's rolling auto-captions. Naively parsing every SRT block doubles segment
+     count with blank entries.
+
+  `srt-parser.js` handles both; `srt-parser.test.js` encodes these as regression tests against
+  the real fixture. **If a future Apify actor version changes the SRT shape, these tests are the
+  early-warning system — don't just widen them to pass, re-verify against a fresh real sample
+  first.**
+- Real actor **input** schema differs from what repo `CLAUDE.md` originally documented. Observed
+  keys (single-video mode): `startUrls`, `maxResults`, `maxResultsShorts`, `maxResultStreams`,
+  `downloadSubtitles`, `subtitlesFormat`, `preferAutoGeneratedSubtitles` (not
+  `preferAutoGenerated`), `saveSubsToKVS`, plus a long list of boolean content filters (`hasCC`,
+  `hasSubtitles`, `is360`, `is3D`, `is4K`, `isHD`, `isHDR`, `isVR180`, `isLive`, `isBought`,
+  `hasLocation`, `aiVideoDescription`, `aiVideoSummary`). **Not observed**: `subtitlesLanguage`,
+  `dateFilter`, `oldestPostDate`, `videoType`, `sortVideosBy`, `maxComments`, `searchQueries` —
+  these were assumed present per the original design doc but never appeared in either probe's
+  echoed input, because both probes used a single-video `startUrls` entry, not a channel handle.
+  **A channel-mode probe is required to know what these actually look like** (see next section).
+
+## What `apify-harvest.js` already enforces
+
+- `--max-results` and `--oldest-post-date` are both mandatory CLI args, dry-run or not (guardrail:
+  no unbounded channel pulls).
+- Queue-depth ceiling: queries live `Triage Status = Queued` count before running anything;
+  refuses to proceed if at/above `--queue-ceiling` (default 30). Rationale is in repo
+  `CLAUDE.md` — the refinery's bottleneck is the human review gate, not capture, so an unbounded
+  automated feed just piles up unreviewed ore.
+- `--dry-run` performs every read (Apify call, Airtable existence lookups) but zero writes, and
+  prints the exact fields it would have written.
+- Upsert-by-Video-ID, Channel find-or-create by `Channel Handle = channelId`, and "never touch
+  Triage Status on update" are all lifted directly from `chrome-extension/background.js` —
+  intentionally the same invariants, not reinvented.
+- New-Channel creation logs a loud warning (`[channel] created "..." with NO Track set...`)
+  because a Track-less Channel silently disappears from the AIHS working view
+  (`Track = AIHS OR Tooling-watch`). The CLI surfaces this; it does not (and shouldn't) guess a
+  Track value.
+
+## Next step, in order
+
+1. **Run the real dry-run smoke test locally** (this Cowork sandbox had no outbound network —
+   the code has literally never hit a live API):
+   ```
+   cd normalizer && npm test
+   node apify-harvest.js --channel-url https://www.youtube.com/@WayneStLedger \
+     --max-results 2 --oldest-post-date 2026-01-01 --dry-run
+   ```
+   Confirm: queue-check succeeds, Apify call succeeds, printed fields look right, no writes
+   happened (check Airtable directly — nothing new).
+
+2. **Do a real channel-mode probe** (separate from step 1 — that's `--dry-run`, this is
+   inspecting what the actor's channel-sweep input/output actually looks like). Either add a
+   `--print-raw-input`/`--print-raw-output` debug flag to the CLI, or just call the actor
+   directly via curl/Apify console with a channel `startUrls` entry and `maxResults: 3`. The goal
+   is to confirm (a) the real field name for date-bounding a channel sweep — `oldestPostDate` is
+   currently hardcoded as a guess — and (b) whether `maxResults` alone is enough to bound a
+   channel pull or whether an unset date filter still walks the whole channel history. **Do not
+   remove the mandatory-date-filter guardrail based on assumption; verify first.**
+
+3. Once (1) and (2) pass, remove `--dry-run` and do one real create against a throwaway/known
+   channel, then verify by querying Airtable directly (per the repo's own "never trust a status
+   flag, verify by querying" lesson from the panel-state retro).
+
+4. **Track-unset triage view** — CLAUDE.md calls for one (a saved Airtable view filtering
+   Channels or Videos where Track is blank) so bulk-ingested Channels don't silently vanish. Not
+   built yet, in either repo. Cheap to add via the Airtable MCP/UI once you're ready.
+
+5. Decide how this actually runs unattended — cron on some always-on machine? A Claude scheduled
+   task? Manual for now? Nothing in `apify-harvest.js` assumes a particular invocation method; it's
+   just a CLI.
+
+6. Once (1)–(3) are proven, promote it: repo `CLAUDE.md` says an `apify-harvest` skill should
+   replace the retired `harvest-playlist`/`verify-panel`/`youtube-panel-triage` skills. Don't do
+   this before the guardrails are actually validated against live data — that's the whole point
+   of doing it in this order.
+
+7. Not this normalizer's job, but adjacent and worth remembering: the receiving-end refinery
+   (`~/claude/Youtube Transcripts`) still has its own gate closed — "Still gated until treatment
+   quality is proven." Getting capture working doesn't change that; if anything it raises the
+   volume hitting an already-throttled human review step. Don't let capture velocity outrun triage
+   capacity — that queue-ceiling check in step 2 above is the mechanical version of that same
+   discipline.
+
+## Non-goals / explicitly deferred
+
+- Retry/backoff on transient Apify or Airtable failures — none implemented. A failed run today
+  just exits non-zero; whatever partially wrote, wrote (each item's write is independent, so
+  partial progress isn't corrupt, just incomplete).
+- Shorts/streams (`maxResultsShorts`, `maxResultStreams`) — not wired up. Only `maxResults`
+  (regular videos) is passed today.
+- Any per-channel config stored in Airtable (`Harvest?`, `Source URL`, `Last harvested` on
+  Channels) — the original design doc mentions these but they don't exist yet and
+  `apify-harvest.js` takes `--channel-url` on the command line instead. Worth revisiting once
+  you're running this against more than one channel at a time.

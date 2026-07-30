@@ -5,22 +5,34 @@ first; it links back to `CLAUDE.md` and `docs/archive/FINDINGS-youtube-automatio
 "why" behind decisions already made. This file covers only the normalizer build — capture
 architecture and the browser-extension retirement are in the repo `CLAUDE.md`.
 
-**Status as of 2026-07-29 — live-fired in dry-run; the real write is gated on one manual step.**
+**Status as of 2026-07-29 — END TO END PROVEN AGAINST LIVE APIs.** The capture path works
+unattended: Apify channel sweep → parsed transcript → Airtable upsert.
 
-Branch `feat/apify-normalizer` (not merged; kept off `master` until a real write is proven).
-43 unit tests green. Two live Apify channel-mode runs done in `--dry-run`, which confirmed the
-output contract and proved `oldestPostDate` is honored. Three defects were found by checking the
-live base rather than trusting the inferred contract — **none were catchable by the unit tests**:
+Branch `feat/apify-normalizer`. 43 unit tests green. Verified live (not by exit code — by querying
+Airtable afterwards, per write invariant 4):
+
+| Check | Result |
+|---|---|
+| First real write, `--max-results 2` | 2 Videos created, 1 Channel created, 0 errors |
+| Records verified by `Video ID` query | 1 record each; `Queued` / `Sweep` / `apify-youtube-scraper` / `en`; both linked to the same Channel |
+| Transcripts | 330 and 403 segments, `Transcript (Timestamped)` valid JSON; 11,607 / 15,375 chars — no truncation |
+| **Channel key** | exactly **one** `@WayneStLedger` row, keyed `@WayneStLedger`; **zero** UC-keyed rows base-wide — no fork |
+| Idempotent re-run | both reported `updated`, not `created`; Videos stayed 91, Channels stayed 88 |
+| **Invariant 3** | a hand-set `Declined` **survived** the update; the other stayed `Queued` |
+| Duplicates | none, in Videos or Channels |
+
+Three defects were found by checking the live base rather than trusting the inferred contract —
+**none were catchable by the 14 unit tests that were passing at the time**:
 
 1. `Transcript Source` had no valid option for Apify, so every write would have 422'd. A dry-run
    cannot catch this (it performs no writes). Now writes `apify-youtube-scraper`.
 2. **The channel key was wrong** — see the corrected bullet below. This one fails by *succeeding*.
 3. Duplicate keys were resolved by silently taking `records[0]`. Both finders now refuse loudly.
 
-**Remaining blocker:** the `apify-youtube-scraper` choice must be added to
-`Videos → Transcript Source` **by hand in the Airtable UI**. The Airtable API cannot add
-singleSelect choices — a `description`-only PATCH to the field succeeds, the identical PATCH
-carrying `options.choices` fails `INVALID_REQUEST_UNKNOWN`. Until it exists, every write 422s.
+Note for future schema work: **the Airtable API cannot add singleSelect choices.** A
+`description`-only PATCH to a field succeeds, the identical PATCH carrying `options.choices` fails
+`INVALID_REQUEST_UNKNOWN`. Adding `apify-youtube-scraper` to `Transcript Source` had to be done by
+hand in the UI, and it blocked every write until it existed.
 
 ## What exists now
 
@@ -149,48 +161,25 @@ Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v
 
 ## Next step, in order
 
-Steps 1 and 2 of the original list are **done** — the dry-run smoke test and the channel-mode probe
-both ran live on 2026-07-29, and their findings are folded into the sections above. What remains:
+The original steps 1–3 are **done** — dry-run smoke test, channel-mode probe, first real write, and
+the idempotency/invariant-3 re-run all ran live on 2026-07-29. Findings are folded in above.
+What remains:
 
-1. **BLOCKED — add `apify-youtube-scraper` to `Videos → Transcript Source` in the Airtable UI.**
-   Must be done by hand; the API cannot add singleSelect choices. Every write 422s until it exists.
-   Verify with:
-   ```
-   curl -s "https://api.airtable.com/v0/meta/bases/appWSbpJAxjCyLfrZ/tables" \
-     -H "Authorization: Bearer $AIRTABLE_API_KEY" | grep -o 'apify-youtube-scraper'
-   ```
+1. **Set `Track` on the new `@WayneStLedger` Channel** (`rec4cdSg0ws368gtK`) — currently blank, so
+   its two videos are invisible in the AIHS working view. Needs a human call: `AIHS`,
+   `Tooling-watch`, or `Personal`. Neither the CLI nor a future session should guess it.
 
-2. **First real write** — drop `--dry-run`, keep `--max-results 2`:
-   ```
-   cd normalizer && npm test && node apify-harvest.js \
-     --channel-url https://www.youtube.com/@WayneStLedger \
-     --max-results 2 --oldest-post-date 2026-01-01
-   ```
-   Expect the loud blank-`Track` warning; that path is meant to fire. Then **verify by querying**
-   (invariant 4, never the exit code): one record per Video ID, `Triage Status = Queued`,
-   `Intake Source = Sweep`, `Transcript Source = apify-youtube-scraper`, `Channel` linked to a
-   single `@WayneStLedger` row, `Transcript (Timestamped)` parses as JSON, and Channels gained
-   exactly **one** row (if it gained two, the channel-key fix regressed).
+2. **Track-unset view** — a Channels grid view filtered to blank `Track`. Manual UI step (the
+   Airtable MCP has no create-view tool). **29 of 88 Channels have blank `Track`**, so this is
+   fixing a live hole, not just guarding future sweeps.
 
-3. **Idempotency + invariant 3 in one shot**: set one new record to `Declined` by hand, re-run the
-   identical command, confirm it reports `updated` not `created`, no duplicate Video or Channel
-   appears, and **`Declined` survives**.
+3. Decide how this runs unattended — cron on an always-on machine? A Claude scheduled task? Manual?
+   Nothing in `apify-harvest.js` assumes an invocation method. Note the real constraint is not
+   capture any more: it's the human review gate downstream (see the queue ceiling, and item 5).
 
-4. Set `Track` on the new `@WayneStLedger` Channel so its videos stop being invisible.
+4. Merge `feat/apify-normalizer` into `master`.
 
-5. **Track-unset view** — a Channels grid view filtered to blank `Track`. Manual UI step (the
-   Airtable MCP has no create-view tool). **29 of 87 existing Channels already have blank `Track`**,
-   so this is fixing a live hole, not just guarding future sweeps.
-
-6. Decide how this actually runs unattended — cron on an always-on machine? A Claude scheduled
-   task? Manual for now? Nothing in `apify-harvest.js` assumes a particular invocation method.
-
-7. Once (2)–(3) are proven, promote it: repo `CLAUDE.md` says an `apify-harvest` skill should
-   replace the retired `harvest-playlist`/`verify-panel`/`youtube-panel-triage` skills. Don't do
-   this before the guardrails are validated against live data — that's the whole point of the order.
-   Then merge `feat/apify-normalizer` to `master`.
-
-8. Not this normalizer's job, but adjacent and worth remembering: the receiving-end refinery
+5. Not this normalizer's job, but adjacent and worth remembering: the receiving-end refinery
    (`~/claude/Youtube Transcripts`) still has its own gate closed — "Still gated until treatment
    quality is proven." Getting capture working doesn't change that; if anything it raises the
    volume hitting an already-throttled human review step. Don't let capture velocity outrun triage

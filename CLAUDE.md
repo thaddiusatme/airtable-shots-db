@@ -16,7 +16,7 @@ decision record and the full evidence are in `docs/archive/FINDINGS-youtube-auto
 
 | Path | Status |
 |------|--------|
-| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary** — normalizer built, dry-run proven live; first real write gated on one manual Airtable step (branch `feat/apify-normalizer`) |
+| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29 (branch `feat/apify-normalizer`) |
 | Chrome extension (`chrome-extension/`) | **Frozen fallback** — works, no further investment |
 | YouTube Data API v3 | Permanently closed — ownership dealbreaker |
 | Direct HTTP / `timedtext` from our own IP | Permanently closed — 429 `IpBlocked` |
@@ -31,7 +31,12 @@ GUI automation) and B (direct HTTP) are closed.
 **The extension stays loaded and working.** It's the right tool for "this one video, right now, no
 cost." It is not the right tool for unattended volume, and it should not be developed further.
 
-## Active work — Apify → Airtable normalizer `[built; real write gated]`
+## Active work — Apify → Airtable normalizer `[working; proven live 2026-07-29]`
+
+Run it: `cd normalizer && node apify-harvest.js --channel-url <url> --max-results <n>
+--oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]`. `--max-results` and
+`--oldest-post-date` are mandatory by design. Details and the live verification table:
+`docs/NORMALIZER-MANIFEST.md`.
 
 ```
 Airtable Channels (Harvest? · Source URL · Last harvested · Track)
@@ -143,8 +148,11 @@ Tests: `cd chrome-extension && npm test`.
 - **`diagnose-stuck-automation`** — general Claude-in-Chrome checklist for "the click seems to do
   nothing": coordinate scaling, real-vs-scripted click as a variable, network requests as ground
   truth, tab-throttling and tool-timeout artifacts. Not project-specific; kept.
+- **`apify-harvest`** — run a bounded channel sweep through the normalizer and verify the writes
+  landed. Encodes the non-negotiables (verify by querying, check Channels didn't fork, never guess
+  `Track`, never touch `Triage Status`) and the error playbook.
 - Retired 2026-07-29 along with the browser-automation line: `harvest-playlist`, `verify-panel`,
-  `youtube-panel-triage`. An `apify-harvest` skill replaces them once the normalizer works.
+  `youtube-panel-triage`. `apify-harvest` replaces them.
 
 ## Environment
 

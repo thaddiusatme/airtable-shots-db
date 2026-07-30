@@ -16,9 +16,11 @@ eggs/
 .eggs/
 lib/
 lib64/
-# ...but the Chrome extension keeps hand-written source under chrome-extension/lib/
+# ...but the Chrome extension and normalizer keep hand-written source under lib/
 !chrome-extension/lib/
 !chrome-extension/lib/**
+!normalizer/lib/
+!normalizer/lib/**
 parts/
 sdist/
 var/

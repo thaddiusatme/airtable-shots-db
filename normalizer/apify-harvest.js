@@ -169,6 +169,12 @@ async function main() {
 
   const summary = { created: 0, updated: 0, wouldCreate: 0, wouldUpdate: 0, skipped: 0, channelsCreated: 0, errors: 0 };
 
+  // A channel sweep is all one channel, so resolve it once. Without this every
+  // video re-queries Channels — wasted requests against Airtable's 5 req/s cap
+  // (there's no retry/backoff), and in --dry-run it also reports the same
+  // channel as "created" once per video, since nothing is ever really created.
+  const channelCache = new Map();
+
   for (const item of items) {
     const built = buildVideoFields(item);
     if (built.skipped) {
@@ -184,14 +190,20 @@ async function main() {
     // Each item's write is independent, so one failure shouldn't abandon the
     // rest of the sweep — record it, keep going, and exit non-zero at the end.
     try {
-      const channelResult = await upsertChannel(airtableKey, baseId, built.channel, { dryRun: args.dryRun });
-      if (channelResult.created) {
-        summary.channelsCreated++;
-        console.warn(`[channel] created "${built.channel.channelName}" (${built.channel.handleKey || built.channel.fallbackKey}) with NO Track set — it will silently vanish from the working view (Track = AIHS OR Tooling-watch) until someone sets Track by hand.`);
-      } else if (channelResult.matchedOn) {
-        console.log(`[channel] matched existing "${built.channel.channelName}" on ${channelResult.matchedOn}`);
-      } else if (channelResult.skipped) {
-        console.warn(`[channel] ${built.videoId}: ${channelResult.skipped} — video will have no Channel link`);
+      const channelKey = built.channel.handleKey || built.channel.fallbackKey;
+      let channelResult = channelKey ? channelCache.get(channelKey) : undefined;
+      if (!channelResult) {
+        channelResult = await upsertChannel(airtableKey, baseId, built.channel, { dryRun: args.dryRun });
+        if (channelKey) channelCache.set(channelKey, channelResult);
+
+        if (channelResult.created) {
+          summary.channelsCreated++;
+          console.warn(`[channel] created "${built.channel.channelName}" (${channelKey}) with NO Track set — it will silently vanish from the working view (Track = AIHS OR Tooling-watch) until someone sets Track by hand.`);
+        } else if (channelResult.matchedOn) {
+          console.log(`[channel] matched existing "${built.channel.channelName}" on ${channelResult.matchedOn}`);
+        } else if (channelResult.skipped) {
+          console.warn(`[channel] ${built.videoId}: ${channelResult.skipped} — video will have no Channel link`);
+        }
       }
 
       const videoResult = await upsertVideo(

@@ -46,10 +46,32 @@ test('--help short-circuits without needing the mandatory args', () => {
 
 // The mandatory bounds are the guardrail against an unbounded channel pull,
 // so they must fail closed — dry run or not.
-test('validateArgs requires all three bounds', () => {
-  assert.throws(() => validateArgs(parseArgs([])), /--channel-url is required/);
+test('validateArgs requires a channel source and all bounds', () => {
+  assert.throws(() => validateArgs(parseArgs([])), /one of --channel-url or --from-airtable is required/);
   assert.throws(() => validateArgs(parseArgs([])), /--max-results is required/);
   assert.throws(() => validateArgs(parseArgs([])), /--oldest-post-date is required/);
+});
+
+test('validateArgs rejects both channel sources at once', () => {
+  // Two sources of truth for "which channels" is precisely what moving the
+  // config into Airtable exists to avoid, so refuse rather than pick one.
+  const args = parseArgs([...REQUIRED, '--from-airtable']);
+  assert.throws(() => validateArgs(args), /mutually exclusive/);
+});
+
+// --from-airtable multiplies the cost by the number of ticked channels, so it
+// needs the per-channel bounds MORE than a single-channel run does.
+test('--from-airtable still requires the per-channel bounds', () => {
+  assert.throws(() => validateArgs(parseArgs(['--from-airtable'])), /--max-results is required/);
+  assert.throws(() => validateArgs(parseArgs(['--from-airtable'])), /--oldest-post-date is required/);
+  assert.doesNotThrow(() =>
+    validateArgs(parseArgs(['--from-airtable', '--max-results', '5', '--oldest-post-date', '30 days']))
+  );
+});
+
+test('parseArgs defaults --from-airtable to false', () => {
+  assert.equal(parseArgs(REQUIRED).fromAirtable, false);
+  assert.equal(parseArgs(['--from-airtable']).fromAirtable, true);
 });
 
 test('validateArgs rejects a zero, negative, or non-numeric --max-results', () => {

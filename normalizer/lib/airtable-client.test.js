@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   findVideoByVideoId,
   findChannelByHandle,
+  listHarvestChannels,
   upsertChannel,
   upsertVideo,
 } = require('./airtable-client');
@@ -74,7 +75,7 @@ test('upsertChannel matches on @handle and never queries the UC id', async (t) =
     channelName: 'Wayne',
   });
 
-  assert.deepEqual(result, { recordId: 'recChan', created: false, matchedOn: 'handle' });
+  assert.deepEqual(result, { recordId: 'recChan', created: false, matchedOn: 'handle', statsUpdated: false });
   assert.equal(f.calls.length, 1, 'UC fallback should not be queried after a handle hit');
 });
 
@@ -108,7 +109,7 @@ test('upsertChannel creates with the @handle, not the UC id', async (t) => {
     channelUrl: 'https://www.youtube.com/@Wayne',
   });
 
-  assert.deepEqual(result, { recordId: 'recNew', created: true });
+  assert.deepEqual(result, { recordId: 'recNew', created: true, statsUpdated: false });
   const post = f.calls.find((c) => c.method === 'POST');
   assert.equal(post.body.fields['Channel Handle'], '@Wayne');
   assert.equal(post.body.fields.Platform, 'YouTube');
@@ -120,6 +121,91 @@ test('upsertChannel skips when it has no usable key', async (t) => {
   const result = await upsertChannel(KEY, BASE, { handleKey: null, fallbackKey: null, channelName: 'X' });
   assert.equal(result.skipped, 'missing channel info');
   assert.equal(f.calls.length, 0, 'should not hit the API with no key');
+});
+
+// --- channel stats: refresh on match, never touch Track ---------------------
+
+test('upsertChannel PATCHes stats onto an existing row and leaves Track alone', async (t) => {
+  const f = installFetch((call) =>
+    call.method === 'PATCH' ? { id: 'recChan' } : { records: [{ id: 'recChan' }] }
+  );
+  t.after(f.restore);
+
+  const result = await upsertChannel(KEY, BASE, {
+    handleKey: '@Wayne',
+    fallbackKey: 'UCxxx',
+    channelName: 'Wayne',
+    stats: { Subscribers: 174, 'Total Views': 88652, 'Stats Captured At': '2026-07-30T00:00:00.000Z' },
+  });
+
+  assert.equal(result.statsUpdated, true);
+  const patch = f.calls.find((c) => c.method === 'PATCH');
+  assert.equal(patch.body.fields.Subscribers, 174);
+  // Track is human-owned routing — the Channels analogue of invariant 3. A
+  // blank/overwritten Track silently drops the channel out of the AIHS view.
+  assert.equal('Track' in patch.body.fields, false, 'Track must never be written');
+  assert.equal('Channel Handle' in patch.body.fields, false, 'the upsert key must never be rewritten');
+});
+
+test('upsertChannel skips the stats PATCH entirely when there are no stats', async (t) => {
+  const f = installFetch(() => ({ records: [{ id: 'recChan' }] }));
+  t.after(f.restore);
+
+  const result = await upsertChannel(KEY, BASE, { handleKey: '@Wayne', channelName: 'Wayne', stats: {} });
+
+  assert.equal(result.statsUpdated, false);
+  assert.equal(f.calls.every((c) => c.method === 'GET'), true, 'an empty stats object must not trigger a write');
+});
+
+test('upsertChannel dry run never PATCHes stats', async (t) => {
+  const f = installFetch(() => ({ records: [{ id: 'recChan' }] }));
+  t.after(f.restore);
+
+  const result = await upsertChannel(
+    KEY,
+    BASE,
+    { handleKey: '@Wayne', channelName: 'Wayne', stats: { Subscribers: 174 } },
+    { dryRun: true }
+  );
+
+  assert.equal(result.statsUpdated, false);
+  assert.equal(f.calls.every((c) => c.method === 'GET'), true, 'no writes in dry run');
+});
+
+test('a new channel is created with its stats already populated', async (t) => {
+  const f = installFetch((call) => (call.method === 'POST' ? { id: 'recNew' } : { records: [] }));
+  t.after(f.restore);
+
+  await upsertChannel(KEY, BASE, {
+    handleKey: '@Wayne',
+    channelName: 'Wayne',
+    stats: { Subscribers: 174 },
+  });
+
+  const post = f.calls.find((c) => c.method === 'POST');
+  assert.equal(post.body.fields.Subscribers, 174);
+  assert.equal(post.body.fields['Channel Handle'], '@Wayne');
+});
+
+// --- the harvest queue lives in Airtable, not in a repo file ----------------
+
+test('listHarvestChannels returns Harvest?-ticked rows with their Source URL', async (t) => {
+  const f = installFetch(() => ({
+    records: [
+      { id: 'recA', fields: { 'Channel Name': 'A', 'Source URL': 'https://youtube.com/@a' } },
+      { id: 'recB', fields: { 'Channel Name': 'B' } },
+    ],
+  }));
+  t.after(f.restore);
+
+  const rows = await listHarvestChannels(KEY, BASE);
+
+  assert.match(f.calls[0].url, /\{Harvest\?\}=1/);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].sourceUrl, 'https://youtube.com/@a');
+  // A ticked row with no Source URL is surfaced, not silently dropped here —
+  // the CLI warns about it so the misconfiguration is visible.
+  assert.equal(rows[1].sourceUrl, null);
 });
 
 // --- invariant 3: never touch Triage Status on update ----------------------

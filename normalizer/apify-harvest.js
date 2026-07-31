@@ -8,31 +8,32 @@
 //
 //   - --max-results and --oldest-post-date are MANDATORY on every run,
 //     dry-run or not. No unbounded channel pulls. (Guardrail.)
-//   - Queue-depth ceiling: refuses to run while Triage Status=Queued count
-//     in Airtable is already at/above --queue-ceiling (default 30).
+//   - Queue-depth ceiling: stops before any channel while the Triage
+//     Status=Queued count in Airtable is at/above --queue-ceiling (default
+//     30). Re-checked per channel, not once per run — see main().
 //   - --dry-run performs all reads (Apify call + Airtable existence checks)
 //     but no writes, and prints exactly what it would have written.
 //   - Reuses chrome-extension/lib/transcript-utils.js for GH-64 truncation,
 //     and the write invariants from background.js (upsert by Video ID,
 //     never touch Triage Status on update, Channel found/created by
-//     Channel Handle = channelId).
+//     Channel Handle = '@' + channelUsername).
 //
-// KNOWN GAP (2026-07-29): "oldestPostDate" is confirmed to be a REAL actor
-// input key (documented as "only posts uploaded after or on this date"; it
-// also accepts a relative value like "7 days"). What is NOT yet confirmed is
-// that the actor actually HONORS it in channel-sweep mode — an accepted-but-
-// ignored field looks identical to a working one until --max-results is
-// raised, at which point a "bounded" sweep walks the whole channel history.
-// Prove it with --save-raw: check the captured publish dates against the
-// bound, then re-run with a recent date and confirm the item set changes.
-// Until that negative control passes, --max-results is the only real bound.
+// "oldestPostDate" is HONORED, not merely accepted — proven 2026-07-29 by
+// negative control: bounding the same call at a later date returned 1 item
+// instead of 2. It also accepts relative values like "7 days".
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const { runActorSync } = require('./lib/apify-client');
 const { buildVideoFields } = require('./lib/transform');
-const { countQueued, upsertChannel, upsertVideo } = require('./lib/airtable-client');
+const {
+  countQueued,
+  listHarvestChannels,
+  patchChannel,
+  upsertChannel,
+  upsertVideo,
+} = require('./lib/airtable-client');
 
 function loadDotEnv() {
   const envPath = path.join(__dirname, '..', '.env');
@@ -45,21 +46,25 @@ function loadDotEnv() {
 
 const USAGE = `Usage:
   node apify-harvest.js --channel-url <url> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
+  node apify-harvest.js --from-airtable  --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
 
-Required (guardrail: no unbounded channel pulls):
-  --channel-url <url>          Channel to harvest, e.g. https://www.youtube.com/@Someone
-  --max-results <n>            Max regular videos to pull
+Channel selection (exactly one):
+  --channel-url <url>          One channel, e.g. https://www.youtube.com/@Someone
+  --from-airtable              Every Channel row with Harvest? ticked, using its Source URL
+
+Required in both modes (guardrail: no unbounded channel pulls):
+  --max-results <n>            Max regular videos to pull, PER CHANNEL
   --oldest-post-date <date>    Only videos on/after this date (ISO, or relative like "7 days")
 
 Options:
-  --queue-ceiling <n>          Refuse to run if Queued count >= n (default 30)
+  --queue-ceiling <n>          Stop before any channel whose Queued count >= n (default 30)
   --dry-run                    Do every read, print intended writes, write nothing
-  --save-raw <path>            Dump the raw Apify dataset to <path> for inspection
+  --save-raw <path>            Dump the raw Apify dataset to <path> (one file per channel in batch mode)
   --help                       Show this message
 `;
 
 function parseArgs(argv) {
-  const args = { dryRun: false, queueCeiling: 30, help: false };
+  const args = { dryRun: false, fromAirtable: false, queueCeiling: 30, help: false };
   for (let i = 0; i < argv.length; i++) {
     // Accept both "--flag value" and "--flag=value".
     const raw = argv[i];
@@ -83,6 +88,9 @@ function parseArgs(argv) {
         break;
       case '--save-raw':
         args.saveRaw = takeValue();
+        break;
+      case '--from-airtable':
+        args.fromAirtable = true;
         break;
       case '--dry-run':
         args.dryRun = true;
@@ -112,7 +120,13 @@ function elideTranscripts(fields) {
 
 function validateArgs(args) {
   const errors = [];
-  if (!args.channelUrl) errors.push('--channel-url is required');
+  // Exactly one channel source. Accepting both would silently ignore one of
+  // them, and the harvest config living in two places is the failure mode the
+  // Airtable-driven design exists to avoid.
+  if (!args.channelUrl && !args.fromAirtable) errors.push('one of --channel-url or --from-airtable is required');
+  if (args.channelUrl && args.fromAirtable) errors.push('--channel-url and --from-airtable are mutually exclusive');
+  // Per-channel bounds stay mandatory in batch mode: --from-airtable multiplies
+  // the cost by the number of ticked channels, so it needs MORE bounding, not less.
   if (!args.maxResults || args.maxResults <= 0) errors.push('--max-results is required and must be > 0 (guardrail: no unbounded pulls)');
   if (!args.oldestPostDate) errors.push('--oldest-post-date is required (guardrail: no unbounded pulls) — format YYYY-MM-DD');
   if (errors.length) {
@@ -120,33 +134,33 @@ function validateArgs(args) {
   }
 }
 
-async function main() {
-  loadDotEnv();
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help) {
-    console.log(USAGE);
-    return;
-  }
-  validateArgs(args);
+function emptySummary() {
+  return { created: 0, updated: 0, wouldCreate: 0, wouldUpdate: 0, skipped: 0, channelsCreated: 0, errors: 0 };
+}
 
-  const apifyToken = process.env.APIFY_TOKEN;
-  const airtableKey = process.env.AIRTABLE_API_KEY;
-  const baseId = process.env.AIRTABLE_BASE_ID;
+function mergeSummary(total, part) {
+  for (const key of Object.keys(total)) total[key] += part[key];
+}
 
-  if (!apifyToken) throw new Error('APIFY_TOKEN not set (.env)');
-  if (!airtableKey || !baseId) throw new Error('AIRTABLE_API_KEY / AIRTABLE_BASE_ID not set (.env)');
+// In batch mode one --save-raw path would have each channel overwrite the last,
+// so give each its own file. Single-channel runs keep the exact path given.
+function rawPathFor(basePath, channel, index, isBatch) {
+  if (!isBatch) return basePath;
+  const slug = String(channel.channelName).replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  const ext = path.extname(basePath);
+  return path.join(
+    path.dirname(basePath),
+    `${path.basename(basePath, ext)}.${String(index + 1).padStart(2, '0')}-${slug}${ext}`
+  );
+}
 
-  console.log(`[queue check] querying Triage Status=Queued count...`);
-  const queuedCount = await countQueued(airtableKey, baseId);
-  console.log(`[queue check] ${queuedCount} currently Queued (ceiling: ${args.queueCeiling})`);
-  if (queuedCount >= args.queueCeiling) {
-    console.error(`Refusing to harvest: Queued count (${queuedCount}) is at/above the ceiling (${args.queueCeiling}). The refinery's bottleneck is the human review gate, not capture — clear the queue before sweeping more in.`);
-    process.exitCode = 1;
-    return;
-  }
+// Harvest one channel. Returns its own summary so the caller can decide
+// whether the sweep was clean enough to stamp Last harvested.
+async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, capturedAt, rawPath }) {
+  const summary = emptySummary();
 
   const input = {
-    startUrls: [{ url: args.channelUrl }],
+    startUrls: [{ url: channel.sourceUrl }],
     maxResults: args.maxResults,
     oldestPostDate: args.oldestPostDate,
     downloadSubtitles: true,
@@ -162,12 +176,10 @@ async function main() {
 
   // Write the raw capture before any processing, so a later failure still
   // leaves the observed output on disk to inspect and turn into a fixture.
-  if (args.saveRaw) {
-    fs.writeFileSync(args.saveRaw, JSON.stringify(items, null, 2));
-    console.log(`[apify] raw dataset written to ${args.saveRaw}`);
+  if (rawPath) {
+    fs.writeFileSync(rawPath, JSON.stringify(items, null, 2));
+    console.log(`[apify] raw dataset written to ${rawPath}`);
   }
-
-  const summary = { created: 0, updated: 0, wouldCreate: 0, wouldUpdate: 0, skipped: 0, channelsCreated: 0, errors: 0 };
 
   // A channel sweep is all one channel, so resolve it once. Without this every
   // video re-queries Channels — wasted requests against Airtable's 5 req/s cap
@@ -176,7 +188,7 @@ async function main() {
   const channelCache = new Map();
 
   for (const item of items) {
-    const built = buildVideoFields(item);
+    const built = buildVideoFields(item, { capturedAt });
     if (built.skipped) {
       console.warn(`[skip] ${item?.id || '(no id)'}: ${built.skipped}`);
       summary.skipped++;
@@ -200,7 +212,8 @@ async function main() {
           summary.channelsCreated++;
           console.warn(`[channel] created "${built.channel.channelName}" (${channelKey}) with NO Track set — it will silently vanish from the working view (Track = AIHS OR Tooling-watch) until someone sets Track by hand.`);
         } else if (channelResult.matchedOn) {
-          console.log(`[channel] matched existing "${built.channel.channelName}" on ${channelResult.matchedOn}`);
+          const stats = channelResult.statsUpdated ? ', stats refreshed' : '';
+          console.log(`[channel] matched existing "${built.channel.channelName}" on ${channelResult.matchedOn}${stats}`);
         } else if (channelResult.skipped) {
           console.warn(`[channel] ${built.videoId}: ${channelResult.skipped} — video will have no Channel link`);
         }
@@ -235,10 +248,116 @@ async function main() {
     }
   }
 
-  console.log('\n[summary]', JSON.stringify(summary, null, 2));
+  return summary;
+}
+
+// Resolve the channels to sweep: either the single --channel-url, or every
+// Harvest?-ticked row in Airtable. A ticked row with no Source URL is a
+// configuration mistake, so warn rather than guessing a URL from the handle.
+async function resolveChannels(args, airtableKey, baseId) {
+  if (!args.fromAirtable) {
+    return [{ recordId: null, channelName: args.channelUrl, sourceUrl: args.channelUrl }];
+  }
+
+  const rows = await listHarvestChannels(airtableKey, baseId);
+  console.log(`[config] ${rows.length} channel(s) with Harvest? ticked`);
+
+  const usable = [];
+  for (const row of rows) {
+    if (!row.sourceUrl) {
+      console.warn(`[config] skipping "${row.channelName}" — Harvest? is ticked but Source URL is blank`);
+      continue;
+    }
+    usable.push(row);
+  }
+  return usable;
+}
+
+async function main() {
+  loadDotEnv();
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log(USAGE);
+    return;
+  }
+  validateArgs(args);
+
+  const apifyToken = process.env.APIFY_TOKEN;
+  const airtableKey = process.env.AIRTABLE_API_KEY;
+  const baseId = process.env.AIRTABLE_BASE_ID;
+
+  if (!apifyToken) throw new Error('APIFY_TOKEN not set (.env)');
+  if (!airtableKey || !baseId) throw new Error('AIRTABLE_API_KEY / AIRTABLE_BASE_ID not set (.env)');
+
+  // One timestamp for the whole run, so every record swept together carries
+  // the same Metrics Captured At and the snapshot is comparable across rows.
+  const capturedAt = new Date().toISOString();
+
+  const channels = await resolveChannels(args, airtableKey, baseId);
+  if (channels.length === 0) {
+    console.error('Nothing to harvest: no channel had both Harvest? ticked and a Source URL set.');
+    process.exitCode = 1;
+    return;
+  }
+
+  const isBatch = channels.length > 1;
+  const total = emptySummary();
+  let stopped = null;
+
+  for (const [index, channel] of channels.entries()) {
+    // Re-check the ceiling before EVERY channel, not once per run. Checking
+    // once and then sweeping ten channels through that single verdict is how a
+    // guardrail stops guarding at exactly the moment volume arrives — the
+    // refinery's bottleneck is the human review gate, and this is what keeps
+    // capture from outrunning it.
+    const queuedCount = await countQueued(airtableKey, baseId);
+    if (queuedCount >= args.queueCeiling) {
+      stopped = { queuedCount, remaining: channels.slice(index) };
+      break;
+    }
+
+    console.log(`\n=== [${index + 1}/${channels.length}] ${channel.channelName} — ${queuedCount} Queued (ceiling: ${args.queueCeiling}) ===`);
+
+    // One bad channel must not abandon the rest of the batch.
+    try {
+      const summary = await sweepChannel({
+        apifyToken,
+        airtableKey,
+        baseId,
+        channel,
+        args,
+        capturedAt,
+        rawPath: args.saveRaw ? rawPathFor(args.saveRaw, channel, index, isBatch) : null,
+      });
+      mergeSummary(total, summary);
+      console.log(`[channel summary] ${channel.channelName}:`, JSON.stringify(summary));
+
+      // Stamp Last harvested only on a clean sweep. A run with errors
+      // deliberately leaves it stale so the gap stays visible in the base.
+      if (channel.recordId && summary.errors === 0 && !args.dryRun) {
+        await patchChannel(airtableKey, baseId, channel.recordId, { 'Last harvested': capturedAt });
+        console.log(`[config] stamped Last harvested on "${channel.channelName}"`);
+      } else if (channel.recordId && summary.errors > 0) {
+        console.warn(`[config] NOT stamping Last harvested on "${channel.channelName}" — ${summary.errors} error(s), so it stays visibly stale.`);
+      }
+    } catch (error) {
+      total.errors++;
+      console.error(`[error] channel "${channel.channelName}": ${error.message}`);
+    }
+  }
+
+  console.log('\n[summary]', JSON.stringify(total, null, 2));
+
+  if (stopped) {
+    console.error(
+      `\nStopped before ${stopped.remaining.length} remaining channel(s): Queued count (${stopped.queuedCount}) reached the ceiling (${args.queueCeiling}). The refinery's bottleneck is the human review gate, not capture — clear the queue, then re-run.\n  Not swept: ${stopped.remaining.map((c) => c.channelName).join(', ')}`
+    );
+    process.exitCode = 1;
+  }
+
   if (args.dryRun) console.log('\nDry run — nothing was written to Airtable.');
-  if (summary.errors > 0) {
-    console.error(`\n${summary.errors} item(s) failed — see [error] lines above.`);
+  if (total.errors > 0) {
+    console.error(`\n${total.errors} item(s) failed — see [error] lines above.`);
     process.exitCode = 1;
   }
 }

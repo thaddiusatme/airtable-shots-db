@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { buildVideoFields } = require('./transform');
+const { buildVideoFields, parseDuration, buildChannelStats } = require('./transform');
 
 const SRT_FIXTURE = fs.readFileSync(
   path.join(__dirname, '__fixtures__', 'qdRw7oHDXJw.srt.txt'),
@@ -175,4 +175,119 @@ test('the actor still reports the publish date as `date` in ISO form', () => {
   // --oldest-post-date bounding is only verifiable against this field, and the
   // 2026-07-29 negative control proved the actor honors the bound.
   assert.match(CHANNEL_ITEM.date, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+// --- metrics and repurposing material ---------------------------------------
+
+test('parseDuration converts the actor\'s clock string to seconds', () => {
+  assert.equal(parseDuration('00:10:44'), 644);
+  assert.equal(parseDuration('10:44'), 644);
+  assert.equal(parseDuration('1:00:00'), 3600);
+  assert.equal(parseDuration('00:00:00'), 0);
+});
+
+test('parseDuration returns null rather than throwing on junk', () => {
+  // buildVideoFields is total by contract — a weird duration must not cost us
+  // the whole video.
+  for (const bad of [undefined, null, '', 'LIVE', '12', '1:2:3:4', 'a:b', 3600]) {
+    assert.equal(parseDuration(bad), null, `expected null for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('the real item maps metrics, description, and links into updateFields', () => {
+  const result = buildVideoFields(CHANNEL_ITEM, { capturedAt: '2026-07-30T12:00:00.000Z' });
+  const f = result.updateFields;
+
+  assert.equal(f['View Count'], 24);
+  assert.equal(f['Comment Count'], 1);
+  assert.equal(f.Duration, 644);
+  assert.equal(f['Published At'], '2026-07-29T16:14:33.000Z');
+  assert.equal(f['Metrics Captured At'], '2026-07-30T12:00:00.000Z');
+  assert.ok(f.Description.includes('Claude Code token usage'));
+  assert.deepEqual(f['Description Links'].split('\n'), [
+    'https://www.skool.com/marketing-hub-8910',
+    'https://leads.stledgermarketing.com/weekly-live-calls/',
+  ]);
+  assert.deepEqual(result.warnings, []);
+});
+
+test('a zero metric is written as 0, not dropped', () => {
+  // `likes: 0` is real observed output. A truthiness guard would drop exactly
+  // the videos where the zero is the informative part.
+  const result = buildVideoFields(CHANNEL_ITEM);
+  assert.equal(CHANNEL_ITEM.likes, 0);
+  assert.equal(result.updateFields['Like Count'], 0);
+  assert.equal('Like Count' in result.updateFields, true);
+});
+
+test('a missing metric is omitted rather than fabricated as 0', () => {
+  const result = buildVideoFields(baseItem({ viewCount: null, likes: undefined, commentsCount: 'NaN' }));
+  assert.equal('View Count' in result.updateFields, false);
+  assert.equal('Like Count' in result.updateFields, false);
+  assert.equal('Comment Count' in result.updateFields, false);
+});
+
+test('an empty hashtags array writes no Hashtags field', () => {
+  assert.deepEqual(CHANNEL_ITEM.hashtags, []);
+  const result = buildVideoFields(CHANNEL_ITEM);
+  assert.equal('Hashtags' in result.updateFields, false);
+});
+
+test('hashtags are space-joined plain text, never a select value', () => {
+  const result = buildVideoFields(baseItem({ hashtags: ['#ai', '#copilot'] }));
+  assert.equal(result.updateFields.Hashtags, '#ai #copilot');
+  assert.equal(typeof result.updateFields.Hashtags, 'string');
+});
+
+test('duplicate description links are collapsed, order preserved', () => {
+  const result = buildVideoFields(
+    baseItem({
+      descriptionLinks: [
+        { url: 'https://a.example' },
+        { url: 'https://b.example' },
+        { url: 'https://a.example' },
+        { text: 'no url here' },
+      ],
+    })
+  );
+  assert.deepEqual(result.updateFields['Description Links'].split('\n'), [
+    'https://a.example',
+    'https://b.example',
+  ]);
+});
+
+test('a non-ISO publish date is left blank rather than stored unparseable', () => {
+  const result = buildVideoFields(baseItem({ date: 'last Tuesday' }));
+  assert.equal('Published At' in result.updateFields, false);
+});
+
+test('no capturedAt means no Metrics Captured At claim', () => {
+  const result = buildVideoFields(baseItem());
+  assert.equal('Metrics Captured At' in result.updateFields, false);
+});
+
+// --- channel stats -----------------------------------------------------------
+
+test('buildChannelStats maps the channel-level numbers and never emits Track', () => {
+  const stats = buildChannelStats(CHANNEL_ITEM, '2026-07-30T12:00:00.000Z');
+
+  assert.equal(stats.Subscribers, 174);
+  assert.equal(stats['Total Videos'], 393);
+  assert.equal(stats['Total Views'], 88652);
+  assert.ok(stats['Channel Description'].startsWith("Hi, I'm Wayne"));
+  assert.equal(stats['Stats Captured At'], '2026-07-30T12:00:00.000Z');
+  // Structural protection: airtable-client PATCHes this object verbatim onto
+  // an existing Channel row, so Track being absent here is what makes it safe.
+  assert.equal('Track' in stats, false);
+});
+
+test('buildChannelStats returns an empty object when the actor gives no stats', () => {
+  // An empty object is the signal for "no write at all" — a lone timestamp
+  // would claim a refresh that never happened.
+  assert.deepEqual(buildChannelStats({}, '2026-07-30T12:00:00.000Z'), {});
+});
+
+test('the channel descriptor carries stats through to the client', () => {
+  const result = buildVideoFields(CHANNEL_ITEM, { capturedAt: '2026-07-30T12:00:00.000Z' });
+  assert.equal(result.channel.stats.Subscribers, 174);
 });

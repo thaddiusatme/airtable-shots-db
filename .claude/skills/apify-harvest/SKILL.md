@@ -6,11 +6,15 @@ description: Run a bounded YouTube channel sweep into Airtable via the Apify nor
 # Harvest a YouTube channel into Airtable
 
 Runs `normalizer/apify-harvest.js` (Apify `streamers/youtube-scraper` → Airtable Videos). Proven end
-to end 2026-07-29; the verification table is in `docs/NORMALIZER-MANIFEST.md`.
+to end 2026-07-29, extended to metrics + batch sweeps 2026-07-30; verification tables are in
+`docs/NORMALIZER-MANIFEST.md`.
 
-**Costs real money** — pay-per-event, roughly $0.004/video. Always dry-run first.
+**Costs real money** — pay-per-event, roughly $0.004/video, and **a `--dry-run` still runs the actor**,
+so it costs the same as a real run. Dry-run is for checking the payload, not for saving money.
 
 ## Run it
+
+One channel:
 
 ```bash
 cd normalizer && npm test && node apify-harvest.js \
@@ -18,12 +22,22 @@ cd normalizer && npm test && node apify-harvest.js \
   --max-results 5 --oldest-post-date 2026-07-01 --dry-run
 ```
 
-Drop `--dry-run` only after the printed payload looks right. `--save-raw <path>` dumps the raw
-dataset — use it whenever the output shape matters.
+Every channel with `Harvest?` ticked in Airtable (uses each row's `Source URL`):
 
-`--max-results` and `--oldest-post-date` are **mandatory by design**, dry-run or not. Do not add a
-bypass. `oldestPostDate` is verified honored (negative control 2026-07-29), and it accepts relative
-values like `"7 days"`.
+```bash
+cd normalizer && node apify-harvest.js --from-airtable --max-results 5 --oldest-post-date "30 days"
+```
+
+Drop `--dry-run` only after the printed payload looks right. `--save-raw <path>` dumps the raw
+dataset — use it whenever the output shape matters (in batch mode it writes one file per channel).
+
+`--max-results` and `--oldest-post-date` are **mandatory by design** in both modes, dry-run or not.
+Do not add a bypass, and be especially wary of loosening them for `--from-airtable` — batch
+multiplies the cost by the number of ticked channels. `oldestPostDate` is verified honored
+(negative control 2026-07-29) and accepts relative values like `"7 days"`.
+
+**To add a channel to the sweep, tick `Harvest?` and set `Source URL` in Airtable — never edit a
+list in the repo.** That is the whole point of the config living in the base.
 
 ## Non-negotiables
 
@@ -42,7 +56,14 @@ values like `"7 days"`.
    silently gain a fresh transcript on a re-sweep — that's correct, and worth a human glance.
 5. **Adding a new `Transcript Source` value needs an Airtable UI edit.** The API cannot add
    singleSelect choices, and a mismatched value 422s the *entire* record. A dry-run cannot catch it
-   — it performs no writes.
+   — it performs no writes. Same for a brand-new field: it must exist in the base *before* anything
+   writes to it. And never put an actor-supplied value (a hashtag, a category) into a select — we
+   control our provenance slugs, we do not control what YouTube returns.
+6. **Never touch `Track` on an existing Channel.** `upsertChannel` PATCHes stats onto existing rows
+   now; `Track` is human-owned routing, the Channels analogue of `Triage Status`. Clobbering it
+   drops the channel out of the working view *without erroring*.
+7. **Metrics are a snapshot, not history.** A re-sweep overwrites `View Count` and friends in place
+   and re-stamps `Metrics Captured At`. Quote a metric with its capture date, or not at all.
 
 ## When a run reports errors
 
@@ -57,7 +78,12 @@ Per-item failures are isolated: the run continues and exits non-zero. Read the `
 - **429 / rate limit** — there is no retry/backoff (deliberate, documented non-goal). Airtable caps
   at 5 req/s. Re-run; the upsert is idempotent, so it will update rather than duplicate.
 - **Queue ceiling refusal** — working as intended. The bottleneck is the human review gate, not
-  capture. Clear the queue instead of raising `--queue-ceiling`.
+  capture. Clear the queue instead of raising `--queue-ceiling`. In `--from-airtable` mode the
+  ceiling is re-checked before *each* channel, so a batch can stop partway; it names the unswept
+  channels and exits 1. Re-running after clearing the queue picks them up — the upsert is
+  idempotent, so already-swept channels just report `updated`.
+- **`Harvest? is ticked but Source URL is blank`** — a config mistake, not a failure. The run skips
+  that channel and continues. Fill in `Source URL` (the `@handle` page form).
 
 ## Don't
 

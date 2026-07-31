@@ -81,27 +81,75 @@ async function findChannelByHandle(apiKey, baseId, channelHandle) {
   return exactlyOneOrNull(result.records, 'Channel Handle', channelHandle);
 }
 
+// PATCH arbitrary fields onto one Channel row. Callers are responsible for
+// what they put in `fields` — see the invariant note on upsertChannel about
+// what must never appear there.
+async function patchChannel(apiKey, baseId, recordId, fields) {
+  return airtableRequest(apiKey, `${baseId}/Channels/${recordId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ fields }),
+  });
+}
+
+// The harvest queue: every Channel with Harvest? ticked. This is why the
+// config lives in Airtable rather than a repo JSON file — adding a channel to
+// the sweep is a checkbox, not a commit.
+async function listHarvestChannels(apiKey, baseId) {
+  const formula = encodeURIComponent('{Harvest?}=1');
+  const result = await airtableRequest(
+    apiKey,
+    `${baseId}/Channels?filterByFormula=${formula}&pageSize=100`
+  );
+  return (result.records || []).map((record) => ({
+    recordId: record.id,
+    channelName: record.fields['Channel Name'] || '(unnamed)',
+    sourceUrl: record.fields['Source URL'] || null,
+    lastHarvested: record.fields['Last harvested'] || null,
+  }));
+}
+
 // Find-or-create a Channel by Channel Handle.
 //
 // Looks up `handleKey` (@handle — what all existing rows use, see
 // transform.js) first, then `fallbackKey` (the UC... id) so a row created by
 // some other path is still found rather than forked. Creates with handleKey
-// when we have one. Returns { recordId, created, matchedOn }.
+// when we have one. Returns { recordId, created, matchedOn, statsUpdated }.
 //
 // `created: true` means this Channel has no Track set yet — per CLAUDE.md a
 // blank-Track Channel silently vanishes from the AIHS working view
 // (Track = AIHS OR Tooling-watch). Callers should surface `created` loudly.
-async function upsertChannel(apiKey, baseId, { handleKey, fallbackKey, channelName, channelUrl }, { dryRun } = {}) {
+//
+// INVARIANT: on an existing row this writes `stats` and nothing else. `Track`
+// is human-owned routing — the exact same category as Triage Status on Videos
+// (invariant 3), and clobbering it would silently drop a channel out of the
+// refinery's working view. transform.js builds `stats` and never puts Track in
+// it, so the protection is structural rather than a rule to remember here.
+async function upsertChannel(
+  apiKey,
+  baseId,
+  { handleKey, fallbackKey, channelName, channelUrl, stats },
+  { dryRun } = {}
+) {
   const writeKey = handleKey || fallbackKey;
   if (!writeKey || !channelName) return { recordId: null, created: false, skipped: 'missing channel info' };
+
+  const statsFields = stats && Object.keys(stats).length > 0 ? stats : null;
 
   for (const [label, key] of [['handle', handleKey], ['channelId', fallbackKey]]) {
     if (!key) continue;
     const existing = await findChannelByHandle(apiKey, baseId, key);
-    if (existing) return { recordId: existing.id, created: false, matchedOn: label };
+    if (!existing) continue;
+
+    if (statsFields && !dryRun) await patchChannel(apiKey, baseId, existing.id, statsFields);
+    return {
+      recordId: existing.id,
+      created: false,
+      matchedOn: label,
+      statsUpdated: Boolean(statsFields) && !dryRun,
+    };
   }
 
-  if (dryRun) return { recordId: '<dry-run: would create>', created: true };
+  if (dryRun) return { recordId: '<dry-run: would create>', created: true, statsUpdated: false };
 
   const created = await airtableRequest(apiKey, `${baseId}/Channels`, {
     method: 'POST',
@@ -111,11 +159,12 @@ async function upsertChannel(apiKey, baseId, { handleKey, fallbackKey, channelNa
         Platform: 'YouTube',
         'Channel Handle': writeKey,
         'Channel URL': channelUrl || `https://www.youtube.com/channel/${fallbackKey || ''}`,
+        ...(statsFields || {}),
       },
     }),
   });
 
-  return { recordId: created.id, created: true };
+  return { recordId: created.id, created: true, statsUpdated: Boolean(statsFields) };
 }
 
 // Upsert a Videos record by Video ID. `fields` should already be built
@@ -152,6 +201,8 @@ module.exports = {
   countQueued,
   findVideoByVideoId,
   findChannelByHandle,
+  listHarvestChannels,
+  patchChannel,
   upsertChannel,
   upsertVideo,
 };

@@ -21,7 +21,7 @@ left in this repo is mostly *not* "capture more," it's making what's captured ea
 
 | Path | Status |
 |------|--------|
-| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29, extended to metrics + batch sweeps 2026-07-30 (branch `feat/metrics-fields`) |
+| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29, extended to metrics + batch sweeps 2026-07-30, merged to `master` via PR #69 |
 | Chrome extension (`chrome-extension/`) | **Frozen fallback** — works, no further investment |
 | YouTube Data API v3 | Permanently closed — ownership dealbreaker |
 | Direct HTTP / `timedtext` from our own IP | Permanently closed — 429 `IpBlocked` |
@@ -88,11 +88,14 @@ refinery's real bottleneck is a human review gate). All shipped except the last:
 - ✅ `Intake Source` on Videos — hand-curated (`Watch Later`) vs swept (`Sweep`), so triage can be
   stricter on sweeps. Everything triaged before 2026-07-30 was hand-picked; that's no longer true.
 - ✅ Queue-depth ceiling, **re-checked before each channel** in batch mode.
-- ⬜ A **Track-unset** view on Channels. Bulk ingest creates Channels with blank `Track`, and the
-  refinery's working view filters `Track = AIHS OR Tooling-watch` — so blank-Track videos vanish
-  *silently* rather than failing loudly. **4 of 88 Channels** are currently blank
-  (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`). Manual UI step — the
-  Airtable MCP has no create-view tool.
+- ✅ A blank-`Track` guard. Bulk ingest creates Channels with blank `Track`, and the refinery's
+  working view filters `Track = AIHS OR Tooling-watch` — so blank-Track videos vanish *silently*
+  rather than failing loudly. Shipped as a repo-side audit command, `normalizer/audit.js`, rather
+  than a manual Airtable view (the Airtable MCP has no create-view tool, so a view would need
+  manual UI upkeep with nothing to catch drift). Run `cd normalizer && node audit.js` — it also
+  checks for `Harvest?`-ticked channels with no `Source URL`, Videos with no Channel link,
+  duplicate `Video ID`s, and Videos missing `Metrics Captured At`. **4 of 88 Channels** are
+  currently blank-`Track` (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`).
 
 ### Where things stand, and what's actually next
 
@@ -103,12 +106,14 @@ Live counts as of 2026-07-30: **106 Videos** (16 `Queued`, ceiling 30), **88 Cha
 1. **Triage the 16 Queued** before sweeping more — the ceiling will halt a batch partway at 30, by
    design. This is the bottleneck; adding capture volume against it is the one move that makes
    things worse.
-2. **Commit `feat/metrics-fields`** — the metrics/batch work is verified live but was left
-   uncommitted.
-3. Build the Track-unset view (above).
-4. Decide unattended invocation — cron, a scheduled task, or stay manual. `--from-airtable` makes
-   this a single command with no channel list baked into the repo, so nothing blocks it technically.
-   The question is whether *capture* should be automated while triage isn't.
+2. Run `node normalizer/audit.js` (above) periodically to catch drift — it's read-only and cheap.
+3. **Unattended invocation stays manual (decided 2026-07-30).** `--from-airtable` makes it
+   technically a single command with no channel list baked into the repo, but capture is not the
+   real constraint — the AIHS refinery has spawned Ideas from only 5 of 106 captured videos, and
+   published 0 of 27 Ideas ever created. Automating the cheap, working end of the pipe while the
+   downstream review gate stays a bottleneck just piles up unreviewed ore faster. See the pipeline
+   redesign doc, `~/claude/Youtube Transcripts/_meta/SPEC-pipeline-redesign-2026-07-30.md`
+   (pointer: `docs/PIPELINE-REDESIGN.md`), before revisiting this.
 
 Actor input keys (verified 2026-07-29 against the published schema and two live channel-mode runs):
 `startUrls`, `maxResults`, `maxResultsShorts`, `maxResultStreams`, `oldestPostDate`, `dateFilter`,
@@ -151,7 +156,10 @@ correction.
    both finders throw and name the colliding ids rather than silently writing to `records[0]`, which
    is what both it and `background.js` used to do. (`Video ID oTphk2SVHNc` was in exactly this state
    until 2026-07-29; the two records held identical transcripts but disjoint links — 25 Shots on one,
-   the Channel link and provenance on the other — so they were merged, not parked.)
+   the Channel link and provenance on the other. **Corrected 2026-07-30**: live state shows it was
+   *parked*, not merged — `reca4ffDtP8QDoFqt` still exists with `Video ID` mangled to
+   `oTphk2SVHNc-DUP` so it can't re-collide. See "known base state" in
+   `docs/NORMALIZER-MANIFEST.md` for the full list of parked/junk records.)
 3. **Never touch `Triage Status` on update.** Set `Queued` on create only. The Channels analogue is
    **`Track`**: `upsertChannel` now PATCHes stats onto existing rows, and it must never write
    `Track`. Both are human-owned routing, and both fail silently — a clobbered `Track` drops the
@@ -192,11 +200,33 @@ chrome-extension/          # the frozen fallback — Manifest V3, vanilla JS, no
 ├── lib/transcript-utils.js#   GH-64 truncation shim — REUSE THIS in the normalizer
 ├── popup.*  settings.*    #   manual UI + credential entry
 └── icons/                 #   placeholders only; no store publish
+normalizer/                # the primary path — Apify -> Airtable, Node, no deps
+├── apify-harvest.js       #   CLI: arg guardrails, per-channel ceiling re-check, dry-run
+├── audit.js               #   read-only base health check — blank Track, orphans, dupes, stale metrics
+├── lib/apify-client.js    #   actor run + dataset fetch
+├── lib/srt-parser.js      #   subtitles -> {text, start}
+├── lib/transform.js       #   dataset item -> {createOnlyFields, updateFields, channel}
+└── lib/airtable-client.js #   upsert by Video ID, find-or-create Channel, listAll* for audit.js
+docs/TDD-CONTRACT.md       # the one command + the four evidence lines — READ THIS FIRST
+docs/NORMALIZER-MANIFEST.md# normalizer design + live verification tables
 docs/archive/              # FINDINGS-youtube-automation.md — five months of hard-won facts
-.claude/skills/            # diagnose-stuck-automation (general-purpose, kept)
+.github/workflows/check.yml# CI: runs `npm run check`, no credentials, ever
+.claude/skills/            # apify-harvest, diagnose-stuck-automation
 ```
 
-Tests: `cd chrome-extension && npm test`.
+## How work gets done here
+
+One command, from the repo root:
+
+```bash
+npm run setup   # once per clone
+npm run check   # both suites — chrome-extension, then normalizer
+```
+
+Every change reports four lines of evidence — **RED**, **GREEN**, **REGRESSION**, **LIVE** (or an
+explicit "not applicable"). The contract, what LIVE actually requires, and why there is deliberately
+no pre-commit hook: `docs/TDD-CONTRACT.md`. GitHub re-runs `npm run check` on every pull request,
+with no credentials — so it verifies the first three and never the fourth.
 
 ## Skills
 

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   findVideoByVideoId,
   findChannelByHandle,
+  listAllRecords,
   listHarvestChannels,
   upsertChannel,
   upsertVideo,
@@ -206,6 +207,36 @@ test('listHarvestChannels returns Harvest?-ticked rows with their Source URL', a
   // A ticked row with no Source URL is surfaced, not silently dropped here —
   // the CLI warns about it so the misconfiguration is visible.
   assert.equal(rows[1].sourceUrl, null);
+});
+
+// --- listAllRecords follows the offset cursor -------------------------------
+
+test('listAllRecords pages through offset until it runs out', async (t) => {
+  const pages = [
+    { records: [{ id: 'rec1' }, { id: 'rec2' }], offset: 'cursor1' },
+    { records: [{ id: 'rec3' }], offset: undefined },
+  ];
+  let call = 0;
+  const f = installFetch(() => pages[call++]);
+  t.after(f.restore);
+
+  const records = await listAllRecords(KEY, BASE, 'Videos', { fields: ['Video ID'] });
+
+  assert.deepEqual(records.map((r) => r.id), ['rec1', 'rec2', 'rec3']);
+  assert.equal(f.calls.length, 2);
+  assert.doesNotMatch(f.calls[0].url, /offset=/);
+  assert.match(f.calls[1].url, /offset=cursor1/);
+  assert.match(f.calls[0].url, /fields\[\]=Video ID/);
+});
+
+test('listAllRecords returns everything on a single page', async (t) => {
+  const f = installFetch(() => ({ records: [{ id: 'recOnly' }] }));
+  t.after(f.restore);
+
+  const records = await listAllRecords(KEY, BASE, 'Channels');
+
+  assert.equal(records.length, 1);
+  assert.equal(f.calls.length, 1);
 });
 
 // --- invariant 3: never touch Triage Status on update ----------------------

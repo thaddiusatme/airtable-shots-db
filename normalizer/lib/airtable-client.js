@@ -108,6 +108,61 @@ async function listHarvestChannels(apiKey, baseId) {
   }));
 }
 
+// Read every record in a table, following Airtable's `offset` cursor.
+//
+// Distinct from countQueued/listHarvestChannels above, which deliberately read
+// only the first page — a ceiling check doesn't care whether it's 100 or 400,
+// and the harvest queue is a handful of ticked rows. An audit does care: it
+// reports absolute counts, and a silently-truncated read would under-report
+// exactly the problems it exists to find. Videos is already past one page.
+async function listAllRecords(apiKey, baseId, table, { fields = [] } = {}) {
+  const fieldParams = fields.map((f) => `fields%5B%5D=${encodeURIComponent(f)}`).join('&');
+  const records = [];
+  let offset;
+
+  do {
+    const query = [`pageSize=100`, fieldParams, offset ? `offset=${encodeURIComponent(offset)}` : '']
+      .filter(Boolean)
+      .join('&');
+    const result = await airtableRequest(apiKey, `${baseId}/${table}?${query}`);
+    records.push(...(result.records || []));
+    offset = result.offset;
+  } while (offset);
+
+  return records;
+}
+
+async function listAllChannels(apiKey, baseId) {
+  const records = await listAllRecords(apiKey, baseId, 'Channels', {
+    fields: ['Channel Handle', 'Channel Name', 'Track', 'Harvest?', 'Source URL', 'Last harvested'],
+  });
+  return records.map((record) => ({
+    recordId: record.id,
+    handle: record.fields['Channel Handle'] || null,
+    channelName: record.fields['Channel Name'] || '(unnamed)',
+    // Airtable returns singleSelect as a plain string on the REST API.
+    track: record.fields.Track || null,
+    harvest: Boolean(record.fields['Harvest?']),
+    sourceUrl: record.fields['Source URL'] || null,
+    lastHarvested: record.fields['Last harvested'] || null,
+  }));
+}
+
+async function listAllVideos(apiKey, baseId) {
+  const records = await listAllRecords(apiKey, baseId, 'Videos', {
+    fields: ['Video ID', 'Video Title', 'Triage Status', 'Intake Source', 'Channel', 'Metrics Captured At'],
+  });
+  return records.map((record) => ({
+    recordId: record.id,
+    videoId: record.fields['Video ID'] || null,
+    title: record.fields['Video Title'] || null,
+    triageStatus: record.fields['Triage Status'] || null,
+    intakeSource: record.fields['Intake Source'] || null,
+    channelLinks: record.fields.Channel || [],
+    metricsCapturedAt: record.fields['Metrics Captured At'] || null,
+  }));
+}
+
 // Find-or-create a Channel by Channel Handle.
 //
 // Looks up `handleKey` (@handle — what all existing rows use, see
@@ -201,6 +256,9 @@ module.exports = {
   countQueued,
   findVideoByVideoId,
   findChannelByHandle,
+  listAllChannels,
+  listAllRecords,
+  listAllVideos,
   listHarvestChannels,
   patchChannel,
   upsertChannel,

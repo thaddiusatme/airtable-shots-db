@@ -116,6 +116,23 @@ Airtable schema change already applied live (not just in code): `Videos` has a n
 Source` singleSelect field (`fldmKbQYo8YoMWMT4`, options `Watch Later` / `Sweep`) — the guardrail
 CLAUDE.md called for, to let triage be stricter on unattended-sweep videos.
 
+## Known base state — don't re-discover these as defects
+
+Confirmed live 2026-07-30 via `node normalizer/audit.js`. The mangled `Video ID` values on the
+first two can't collide with a real upsert, so these are documented deliberately, not deleted.
+
+| Record | State |
+|---|---|
+| `reca4ffDtP8QDoFqt` | tombstone, `Video ID = oTphk2SVHNc-DUP`, `Triage Status = Done` — parked duplicate of `oTphk2SVHNc`, not merged (see CLAUDE.md write invariant 2) |
+| `recRYJ0UzWJ3YBrzk` | tombstone, `Video ID = V22VtQ916Y0-DUP-declined`, `Triage Status = Declined` |
+| `recLhZak5ARNtgYbE` | completely empty record — no title, no Video ID, no status |
+| `recRlmmrTXdGxFNTb` | stub — has `Video ID = 6KktB5aNrjE`, no title, no Triage Status |
+
+The audit also surfaces two *real* Videos with no Channel link — `I4kGV5sJEdA` and `ib74sLgjIBM`,
+both `Triage Status = Done`. Not junk (real titles, real status), just orphaned from their Channel
+link somehow. Not investigated as part of the 2026-07-30 pass; `audit.js` will keep surfacing them
+until fixed or explicitly noted here as accepted.
+
 ## Verified facts about the Apify actor (streamers/youtube-scraper, h7sDV53CddomktSi5)
 
 Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v=qdRw7oHDXJw`,
@@ -227,7 +244,9 @@ What remains:
    constraint is not capture any more: it's the human review gate downstream (see the queue
    ceiling, and item 5).
 
-4. ~~Merge `feat/apify-normalizer`~~ — **done** (`3a878d1`). `feat/metrics-fields` is the open one.
+4. ~~Merge `feat/apify-normalizer`~~ — **done** (`3a878d1`). ~~Merge `feat/metrics-fields`~~ — **done**
+   (PR #69, `ce91b57`). Work since the merge lives on `feat/tdd-ci`: a TDD contract + CI check
+   (`349c84b`) and the `normalizer/audit.js` command (2026-07-30, this session).
 
 5. Not this normalizer's job, but adjacent and worth remembering: the receiving-end refinery
    (`~/claude/Youtube Transcripts`) still has its own gate closed — "Still gated until treatment

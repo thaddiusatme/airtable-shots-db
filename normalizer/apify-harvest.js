@@ -35,12 +35,33 @@ const {
   upsertVideo,
 } = require('./lib/airtable-client');
 
+// Parse .env text into { KEY: value }. Pure, so it is testable without
+// touching the real .env sitting one directory up.
+function parseDotEnv(text) {
+  const values = {};
+  for (const line of String(text).split('\n')) {
+    const match = /^([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+    if (match) values[match[1]] = unquote(match[2]);
+  }
+  return values;
+}
+
+// Strip one MATCHED pair of surrounding quotes, and nothing else. A lone
+// leading quote is part of the value, not a quote — eating it would silently
+// corrupt a real secret, which is the failure this function exists to avoid.
+function unquote(value) {
+  const quoted = /^"(.*)"$|^'(.*)'$/s.exec(value);
+  if (!quoted) return value;
+  return quoted[1] !== undefined ? quoted[1] : quoted[2];
+}
+
+// Not overriding an already-set variable is the wrapper's job, not the
+// parser's: a real environment beats a file on disk.
 function loadDotEnv() {
   const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) return;
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const match = /^([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  for (const [key, value] of Object.entries(parseDotEnv(fs.readFileSync(envPath, 'utf8')))) {
+    if (!process.env[key]) process.env[key] = value;
   }
 }
 
@@ -369,4 +390,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, validateArgs, elideTranscripts, USAGE };
+module.exports = { parseArgs, parseDotEnv, validateArgs, elideTranscripts, USAGE };

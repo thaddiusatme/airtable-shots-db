@@ -143,6 +143,7 @@ storyboard_output_*/
 gh[0-9]*.txt
 pipeline-server/node_modules/
 chrome-extension/node_modules/
+node_modules/
 
 # Spyder project settings
 .spyderproject

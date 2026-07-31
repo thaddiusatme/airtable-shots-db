@@ -103,10 +103,8 @@ Live counts as of 2026-07-30: **106 Videos** (16 `Queued`, ceiling 30), **88 Cha
 1. **Triage the 16 Queued** before sweeping more — the ceiling will halt a batch partway at 30, by
    design. This is the bottleneck; adding capture volume against it is the one move that makes
    things worse.
-2. **Commit `feat/metrics-fields`** — the metrics/batch work is verified live but was left
-   uncommitted.
-3. Build the Track-unset view (above).
-4. Decide unattended invocation — cron, a scheduled task, or stay manual. `--from-airtable` makes
+2. Build the Track-unset view (above).
+3. Decide unattended invocation — cron, a scheduled task, or stay manual. `--from-airtable` makes
    this a single command with no channel list baked into the repo, so nothing blocks it technically.
    The question is whether *capture* should be automated while triage isn't.
 
@@ -192,11 +190,32 @@ chrome-extension/          # the frozen fallback — Manifest V3, vanilla JS, no
 ├── lib/transcript-utils.js#   GH-64 truncation shim — REUSE THIS in the normalizer
 ├── popup.*  settings.*    #   manual UI + credential entry
 └── icons/                 #   placeholders only; no store publish
+normalizer/                # the primary path — Apify -> Airtable, Node, no deps
+├── apify-harvest.js       #   CLI: arg guardrails, per-channel ceiling re-check, dry-run
+├── lib/apify-client.js    #   actor run + dataset fetch
+├── lib/srt-parser.js      #   subtitles -> {text, start}
+├── lib/transform.js       #   dataset item -> {createOnlyFields, updateFields, channel}
+└── lib/airtable-client.js #   upsert by Video ID, find-or-create Channel
+docs/TDD-CONTRACT.md       # the one command + the four evidence lines — READ THIS FIRST
+docs/NORMALIZER-MANIFEST.md# normalizer design + live verification tables
 docs/archive/              # FINDINGS-youtube-automation.md — five months of hard-won facts
-.claude/skills/            # diagnose-stuck-automation (general-purpose, kept)
+.github/workflows/check.yml# CI: runs `npm run check`, no credentials, ever
+.claude/skills/            # apify-harvest, diagnose-stuck-automation
 ```
 
-Tests: `cd chrome-extension && npm test`.
+## How work gets done here
+
+One command, from the repo root:
+
+```bash
+npm run setup   # once per clone
+npm run check   # both suites — chrome-extension, then normalizer
+```
+
+Every change reports four lines of evidence — **RED**, **GREEN**, **REGRESSION**, **LIVE** (or an
+explicit "not applicable"). The contract, what LIVE actually requires, and why there is deliberately
+no pre-commit hook: `docs/TDD-CONTRACT.md`. GitHub re-runs `npm run check` on every pull request,
+with no credentials — so it verifies the first three and never the fourth.
 
 ## Skills
 

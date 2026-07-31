@@ -1,0 +1,32 @@
+name: check
+
+# Pull requests, plus pushes to master. Scoping `push` to master is deliberate:
+# `on: push` unscoped would double-run for same-repo PR branches, producing two
+# runs per push where the point is one clear green/red check.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: chrome-extension/package-lock.json
+
+      # `npm ci` only in chrome-extension — it is the only package with a
+      # lockfile, and normalizer has no dependencies at all.
+      - run: npm run setup
+
+      # No `env:` block and no `secrets.` reference, on purpose. Both suites are
+      # hermetic: airtable-client.test.js stubs globalThis.fetch and nothing
+      # reads process.env. CI verifies RED/GREEN/REGRESSION; LIVE verification
+      # against Airtable and Apify is a human-reviewed attestation, never a job
+      # here. See docs/TDD-CONTRACT.md.
+      - run: npm run check

@@ -41,9 +41,18 @@ function parseDotEnv(text) {
   const values = {};
   for (const line of String(text).split('\n')) {
     const match = /^([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
-    if (match) values[match[1]] = match[2];
+    if (match) values[match[1]] = unquote(match[2]);
   }
   return values;
+}
+
+// Strip one MATCHED pair of surrounding quotes, and nothing else. A lone
+// leading quote is part of the value, not a quote — eating it would silently
+// corrupt a real secret, which is the failure this function exists to avoid.
+function unquote(value) {
+  const quoted = /^"(.*)"$|^'(.*)'$/s.exec(value);
+  if (!quoted) return value;
+  return quoted[1] !== undefined ? quoted[1] : quoted[2];
 }
 
 // Not overriding an already-set variable is the wrapper's job, not the

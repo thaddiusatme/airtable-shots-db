@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseArgs, validateArgs, elideTranscripts } = require('./apify-harvest');
+const { parseArgs, parseDotEnv, validateArgs, elideTranscripts } = require('./apify-harvest');
 
 const REQUIRED = ['--channel-url', 'https://www.youtube.com/@X', '--max-results', '2', '--oldest-post-date', '2026-01-01'];
 
@@ -83,6 +83,51 @@ test('validateArgs rejects a zero, negative, or non-numeric --max-results', () =
 
 test('validateArgs passes on a complete arg set', () => {
   assert.doesNotThrow(() => validateArgs(parseArgs(REQUIRED)));
+});
+
+// --- .env parsing -----------------------------------------------------------
+//
+// Quoting a value in .env is ordinary — most .env documentation shows it, and
+// anything pasted from a shell export arrives quoted. A parser that keeps the
+// quotes hands Airtable `"patXXX"` and gets a 401, which reads as a bad token
+// rather than a bad parse. That is a long way to walk for a stray character.
+
+test('parseDotEnv reads a bare KEY=value line', () => {
+  assert.deepEqual(parseDotEnv('AIRTABLE_BASE_ID=appWSbpJAxjCyLfrZ'), {
+    AIRTABLE_BASE_ID: 'appWSbpJAxjCyLfrZ',
+  });
+});
+
+test('parseDotEnv strips surrounding double quotes', () => {
+  assert.deepEqual(parseDotEnv('AIRTABLE_API_KEY="patXXX"'), { AIRTABLE_API_KEY: 'patXXX' });
+});
+
+test('parseDotEnv strips surrounding single quotes', () => {
+  assert.deepEqual(parseDotEnv("APIFY_TOKEN='apify_api_XXX'"), { APIFY_TOKEN: 'apify_api_XXX' });
+});
+
+test('parseDotEnv leaves an unmatched quote alone rather than guessing', () => {
+  // Only a matched pair is a quote. `"oops` is a value that starts with a
+  // quote character, and silently eating it would corrupt a real secret.
+  assert.deepEqual(parseDotEnv('APIFY_TOKEN="oops'), { APIFY_TOKEN: '"oops' });
+  assert.deepEqual(parseDotEnv('APIFY_TOKEN=\'mixed"'), { APIFY_TOKEN: '\'mixed"' });
+});
+
+test('parseDotEnv keeps quotes that are inside the value', () => {
+  assert.deepEqual(parseDotEnv('APIFY_TOKEN=a"b"c'), { APIFY_TOKEN: 'a"b"c' });
+});
+
+test('parseDotEnv keeps an "=" that appears inside the value', () => {
+  assert.deepEqual(parseDotEnv('AIRTABLE_API_KEY=pat.a=b=c'), { AIRTABLE_API_KEY: 'pat.a=b=c' });
+});
+
+test('parseDotEnv ignores comments, blank lines, and lowercase keys', () => {
+  const text = ['# a comment', '', '   ', 'lowercase=ignored', 'APIFY_TOKEN=t'].join('\n');
+  assert.deepEqual(parseDotEnv(text), { APIFY_TOKEN: 't' });
+});
+
+test('parseDotEnv reads an empty value as an empty string', () => {
+  assert.deepEqual(parseDotEnv('APIFY_TOKEN='), { APIFY_TOKEN: '' });
 });
 
 test('elideTranscripts summarises long values but keeps short ones intact', () => {

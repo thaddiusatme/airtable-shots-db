@@ -5,6 +5,7 @@
   "description": "Apify streamers/youtube-scraper -> Airtable Videos normalizer for the AIHS transcript refinery",
   "scripts": {
     "test": "node --test",
-    "harvest": "node apify-harvest.js"
+    "harvest": "node apify-harvest.js",
+    "audit": "node audit.js"
   }
 }

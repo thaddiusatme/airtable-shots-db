@@ -13,13 +13,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { listAllChannels, listAllVideos } = require('./lib/airtable-client');
+const { parseDotEnv } = require('./apify-harvest');
 
+// Not overriding an already-set variable is this wrapper's job, not the
+// parser's: a real environment beats a file on disk. Reuses parseDotEnv
+// (apify-harvest.js) rather than re-parsing .env by hand, so a quoted value
+// unwraps here the same way it does for the harvest CLI.
 function loadDotEnv() {
   const envPath = path.join(__dirname, '..', '.env');
   if (!fs.existsSync(envPath)) return;
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const match = /^([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  for (const [key, value] of Object.entries(parseDotEnv(fs.readFileSync(envPath, 'utf8')))) {
+    if (!process.env[key]) process.env[key] = value;
   }
 }
 

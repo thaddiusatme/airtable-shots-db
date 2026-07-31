@@ -34,6 +34,48 @@ function toHandleKey(item) {
   return null;
 }
 
+// The actor reports runtime as a "HH:MM:SS" (or "MM:SS") string; Airtable's
+// duration field wants seconds. Returns null on anything unparseable rather
+// than throwing — buildVideoFields is total by contract, and a weird duration
+// is not worth losing a whole video over.
+function parseDuration(value) {
+  if (typeof value !== 'string') return null;
+  const parts = value.trim().split(':');
+  if (parts.length < 2 || parts.length > 3) return null;
+
+  let seconds = 0;
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null;
+    seconds = seconds * 60 + Number(part);
+  }
+  return seconds;
+}
+
+// The publish date is the field that makes every view count interpretable, so
+// only accept it in the ISO shape the actor was observed to emit — a surprise
+// format is better left blank than silently stored as an unparseable string.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}T/;
+
+// Assign only when the value is genuinely a finite number.
+//
+// This is deliberately a typeof check and not `if (value)`: `likes: 0` is a
+// real value in the observed fixture, and a truthiness guard would drop every
+// zero-like and zero-comment video — precisely the videos where the zero is
+// the informative part. Same reasoning for a missing metric: absent must stay
+// absent rather than becoming a fabricated 0.
+function assignNumber(fields, name, value) {
+  if (typeof value === 'number' && Number.isFinite(value)) fields[name] = value;
+}
+
+// Long text goes through the same GH-64 shim the transcripts use (invariant 5)
+// rather than being written raw — a 100k-char description would 422 the record.
+function assignLongText(fields, name, value, warnings, label) {
+  if (typeof value !== 'string' || value === '') return;
+  const fitted = TranscriptUtils.truncateForAirtable(value);
+  fields[name] = fitted.value;
+  if (fitted.truncated) warnings.push(`${label} truncated to 100k chars (GH-64)`);
+}
+
 // Apify can return several subtitle tracks. Taking [0] blindly stores a
 // non-English transcript under whatever language happened to come first, which
 // fails silently — prefer an en* track and fall back only if there isn't one.
@@ -45,12 +87,36 @@ function pickSubtitle(subtitles) {
   return english || subtitles[0];
 }
 
+// Channel-level stats, keyed by Airtable field name. Returned as its own
+// object so airtable-client can PATCH it onto an existing Channel row without
+// having to know which fields are stats and which are human-owned — `Track`
+// is never in here, so it is structurally impossible to clobber.
+function buildChannelStats(item, capturedAt) {
+  const stats = {};
+  assignNumber(stats, 'Subscribers', item.numberOfSubscribers);
+  assignNumber(stats, 'Total Videos', item.channelTotalVideos);
+  assignNumber(stats, 'Total Views', item.channelTotalViews);
+
+  if (typeof item.channelDescription === 'string' && item.channelDescription !== '') {
+    stats['Channel Description'] = TranscriptUtils.truncateForAirtable(item.channelDescription).value;
+  }
+
+  // Only stamp when something was actually captured — an empty stats object
+  // means "nothing to write", and a lone timestamp would claim otherwise.
+  if (capturedAt && Object.keys(stats).length > 0) stats['Stats Captured At'] = capturedAt;
+
+  return stats;
+}
+
 // Build { createOnlyFields, updateFields, channel, warnings } from one Apify
 // dataset item. Never throws — items missing subtitles still produce a
 // Video row (just without transcript fields), since Triage can't happen
 // without the video existing at all, and a missing transcript is visible
 // and fixable later rather than silently dropping the video.
-function buildVideoFields(item) {
+//
+// `capturedAt` is an ISO string computed once per run by the CLI, so every
+// record in one sweep shares a single timestamp.
+function buildVideoFields(item, { capturedAt } = {}) {
   const warnings = [];
 
   if (!item || !item.id) {
@@ -116,6 +182,51 @@ function buildVideoFields(item) {
     }
   }
 
+  // --- metrics and repurposing material --------------------------------------
+  //
+  // These live in updateFields, not createOnlyFields, and that is the whole
+  // refresh mechanism: they are machine-owned and time-varying, so re-sweeping
+  // a channel updates them in place for free. Nothing here is ever hand-edited,
+  // so unlike Triage Status (invariant 3) there is no human value to clobber.
+  //
+  // Metrics are a snapshot with no history — `Metrics Captured At` is what
+  // keeps a stored view count honest once it's a week old.
+  assignNumber(updateFields, 'View Count', item.viewCount);
+  assignNumber(updateFields, 'Like Count', item.likes);
+  assignNumber(updateFields, 'Comment Count', item.commentsCount);
+  assignNumber(updateFields, 'Duration', parseDuration(item.duration));
+
+  if (typeof item.date === 'string' && ISO_DATE.test(item.date)) {
+    updateFields['Published At'] = item.date;
+  }
+
+  // `text` is the video description: hooks, CTAs, chapter lists, offer framing.
+  assignLongText(updateFields, 'Description', item.text, warnings, 'description');
+
+  // Creators repeat the same link several times in a description, so dedupe
+  // while preserving order — the useful signal is which offers exist, not how
+  // many times each was mentioned.
+  if (Array.isArray(item.descriptionLinks)) {
+    const urls = [
+      ...new Set(
+        item.descriptionLinks
+          .map((link) => link?.url)
+          .filter((url) => typeof url === 'string' && url !== '')
+      ),
+    ];
+    assignLongText(updateFields, 'Description Links', urls.join('\n'), warnings, 'description links');
+  }
+
+  // Plain text, never a multi-select: these values come from the actor rather
+  // than from us, and a value that isn't an existing choice 422s the entire
+  // record (invariant 7). See the field description in Airtable.
+  if (Array.isArray(item.hashtags)) {
+    const tags = item.hashtags.filter((tag) => typeof tag === 'string' && tag !== '');
+    if (tags.length > 0) updateFields.Hashtags = tags.join(' ');
+  }
+
+  if (capturedAt) updateFields['Metrics Captured At'] = capturedAt;
+
   const handleKey = toHandleKey(item);
   if (!handleKey && item.channelId) {
     warnings.push(
@@ -132,9 +243,10 @@ function buildVideoFields(item) {
       fallbackKey: item.channelId || null,
       channelName: item.channelName,
       channelUrl: item.channelUrl,
+      stats: buildChannelStats(item, capturedAt),
     },
     warnings,
   };
 }
 
-module.exports = { buildVideoFields };
+module.exports = { buildVideoFields, parseDuration, buildChannelStats };

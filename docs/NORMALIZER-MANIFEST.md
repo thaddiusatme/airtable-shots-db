@@ -34,24 +34,72 @@ Note for future schema work: **the Airtable API cannot add singleSelect choices.
 `INVALID_REQUEST_UNKNOWN`. Adding `apify-youtube-scraper` to `Transcript Source` had to be done by
 hand in the UI, and it blocked every write until it existed.
 
+## 2026-07-30 — metrics, repurposing fields, and Airtable-driven batch sweeps
+
+Branch `feat/metrics-fields`. 64 unit tests green. The actor returns 45 keys per item and the
+normalizer consumed 9; everything metrics- and description-shaped was being paid for and discarded.
+That is now mapped, and the harvest config moved into Airtable as originally designed.
+
+**New Videos fields** (all in `updateFields`, so a re-sweep refreshes them — that *is* the metrics
+refresh mechanism): `Published At`←`date`, `View Count`←`viewCount`, `Like Count`←`likes`,
+`Comment Count`←`commentsCount`, `Duration`←parsed `duration`, `Description`←`text`,
+`Description Links`←`descriptionLinks[].url` (deduped, one per line), `Hashtags`←`hashtags`,
+`Metrics Captured At`. Plus two Airtable formulas: `Views per Day` (velocity — raw view count only
+rewards old videos) and `Engagement Rate %`.
+
+**New Channels fields**: `Subscribers`, `Total Videos`, `Total Views`, `Channel Description`,
+`Stats Captured At`, plus the harvest config `Harvest?` / `Source URL` / `Last harvested`.
+`upsertChannel` gained an update path so these reach the 88 existing rows, not just new ones.
+
+**`--from-airtable`** sweeps every `Harvest?`-ticked Channel. `--max-results` and
+`--oldest-post-date` remain mandatory: batch mode multiplies cost by the channel count, so it needs
+*more* bounding, not less.
+
+Verified live by querying Airtable, not by exit codes:
+
+| Check | Result |
+|---|---|
+| Batch, 5 channels × `--max-results 3` | 12 Videos created, 3 updated, 0 errors |
+| New fields on a swept record | `View Count` 11368, `Duration` 836s, `Published At` set, `Views per Day` 11368, `Engagement Rate %` 3.83, hashtags as plain text |
+| Channel stats on **existing** rows | all 5 got `Subscribers`/`Total Views`/`Stats Captured At`; `Track` unchanged on every one |
+| `Last harvested` | stamped on all 5 (clean sweeps only — a run with errors deliberately leaves it stale) |
+| **Queue ceiling in batch** | with `--queue-ceiling 10` against 16 Queued, it halted, named all 5 unswept channels, exit 1, and spent nothing on Apify |
+| Duplicates / forks | Videos 94→106, Channels stayed **88**; zero duplicate keys; zero UC-keyed rows |
+| **Invariant 3** | `eOebZr3BwSg` stayed `Declined` and `hFlBYtI7q7o` stayed `Done` through metric updates |
+
+Two things worth knowing before touching this again:
+
+- **Formula-field display precision is not settable over the API.** `create_field` returns
+  `result.options.precision: 0` and `update_field` accepts only `options.formula`. This is
+  *display-only* — verified: the API returns `11.5` and `4.35` for fields formatted to 0 decimals.
+  Set the decimals in the Airtable UI if the grid needs them; the stored values are already exact.
+- **No actor-supplied value may go into a singleSelect/multipleSelects.** `Hashtags` is the obvious
+  trap — it looks like a multi-select, but the values come from the actor, the API cannot add
+  choices, and an unseen value 422s the entire record. It is deliberately plain text.
+
 ## What exists now
 
 ```
 normalizer/
 ├── package.json              — scripts: test, harvest
-├── apify-harvest.js           — the CLI entrypoint
+├── apify-harvest.js           — the CLI entrypoint (single-channel and --from-airtable batch)
+├── apify-harvest.test.js
 └── lib/
     ├── apify-client.js        — runActorSync() against streamers/youtube-scraper
-    ├── airtable-client.js     — countQueued, upsertChannel, upsertVideo (find-or-create/upsert)
-    ├── transform.js           — Apify dataset item -> Airtable fields
+    ├── airtable-client.js     — countQueued, listHarvestChannels, patchChannel,
+    │                            upsertChannel, upsertVideo (find-or-create/upsert)
+    ├── airtable-client.test.js
+    ├── transform.js           — Apify dataset item -> Airtable fields (+ metrics, channel stats)
     ├── transform.test.js
     ├── srt-parser.js          — parses Apify's non-standard inline SRT into {text, start}
     ├── srt-parser.test.js
     └── __fixtures__/
-        └── qdRw7oHDXJw.srt.txt  — real captured sample, trimmed, used by both test files
+        ├── qdRw7oHDXJw.srt.txt  — real captured sample, trimmed, used by both test files
+        └── channel-item.json    — a real channel-mode dataset item; its KEY SET is the
+                                   actor output contract, and the early warning for drift
 ```
 
-Run `cd normalizer && npm test` — 14 tests, all passing as of last run. These are pure unit
+Run `cd normalizer && npm test` — 64 tests, all passing as of 2026-07-30. These are pure unit
 tests (fixture-based); they do not touch the network.
 
 `.gitignore` had a blanket `lib/` rule that was silently swallowing `normalizer/lib/` (the same
@@ -77,8 +125,9 @@ Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v
   run-then-poll-then-fetch-dataset needed for small bounded runs.
 - Field mapping used in `transform.js`:
   `id`→Video ID, `title`→Video Title, `url`→Video URL, `thumbnailUrl`→Thumbnail URL/(Image),
-  `channelName`→Channel Name, `channelUrl`→Channel URL, `date`→(publish date, not stored;
-  used only to verify `oldestPostDate` bounding).
+  `channelName`→Channel Name, `channelUrl`→Channel URL, `date`→**`Published At`** (as of
+  2026-07-30 this is stored, not just used to verify `oldestPostDate` bounding), plus the metrics
+  and channel-stats keys listed in the 2026-07-30 section above.
 
 - ⚠️ **CORRECTED 2026-07-29 — this doc previously had the channel key wrong.** It claimed
   `channelId`→Channel Handle (the `UC...` id) was "confirmed against real output" and "matches how
@@ -165,19 +214,20 @@ The original steps 1–3 are **done** — dry-run smoke test, channel-mode probe
 the idempotency/invariant-3 re-run all ran live on 2026-07-29. Findings are folded in above.
 What remains:
 
-1. **Set `Track` on the new `@WayneStLedger` Channel** (`rec4cdSg0ws368gtK`) — currently blank, so
-   its two videos are invisible in the AIHS working view. Needs a human call: `AIHS`,
-   `Tooling-watch`, or `Personal`. Neither the CLI nor a future session should guess it.
+1. ~~Set `Track` on `@WayneStLedger`~~ — **done**, it is `Tooling-watch` as of 2026-07-30.
 
 2. **Track-unset view** — a Channels grid view filtered to blank `Track`. Manual UI step (the
-   Airtable MCP has no create-view tool). **29 of 88 Channels have blank `Track`**, so this is
-   fixing a live hole, not just guarding future sweeps.
+   Airtable MCP has no create-view tool). Now **4 of 88 Channels** have blank `Track`
+   (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`) — down from 29, but the
+   view is still worth having, because a blank-`Track` channel fails by vanishing silently.
 
 3. Decide how this runs unattended — cron on an always-on machine? A Claude scheduled task? Manual?
-   Nothing in `apify-harvest.js` assumes an invocation method. Note the real constraint is not
-   capture any more: it's the human review gate downstream (see the queue ceiling, and item 5).
+   Nothing in `apify-harvest.js` assumes an invocation method, and `--from-airtable` now makes an
+   unattended invocation a single command with no channel list baked into it. Note the real
+   constraint is not capture any more: it's the human review gate downstream (see the queue
+   ceiling, and item 5).
 
-4. Merge `feat/apify-normalizer` into `master`.
+4. ~~Merge `feat/apify-normalizer`~~ — **done** (`3a878d1`). `feat/metrics-fields` is the open one.
 
 5. Not this normalizer's job, but adjacent and worth remembering: the receiving-end refinery
    (`~/claude/Youtube Transcripts`) still has its own gate closed — "Still gated until treatment
@@ -193,7 +243,14 @@ What remains:
   partial progress isn't corrupt, just incomplete).
 - Shorts/streams (`maxResultsShorts`, `maxResultStreams`) — not wired up. Only `maxResults`
   (regular videos) is passed today.
-- Any per-channel config stored in Airtable (`Harvest?`, `Source URL`, `Last harvested` on
-  Channels) — the original design doc mentions these but they don't exist yet and
-  `apify-harvest.js` takes `--channel-url` on the command line instead. Worth revisiting once
-  you're running this against more than one channel at a time.
+- ~~Per-channel config stored in Airtable~~ — **shipped 2026-07-30.** `Harvest?`, `Source URL` and
+  `Last harvested` exist on Channels and drive `--from-airtable`. `--channel-url` remains for
+  one-off runs.
+- **Metrics history.** Metrics are overwritten in place with a `Metrics Captured At` stamp, so
+  trend data is not recoverable after the fact — you can see what a video's velocity is *now*, not
+  what it was last week. A snapshot table is the upgrade path if "is this angle gaining?" ever
+  becomes a question worth answering; it was deliberately not built.
+- **Backfilling the extension-captured videos.** Videos captured before the sweep window stay
+  metric-less. Note this partially self-heals: a re-swept channel updates any of its videos that
+  still fall inside `--oldest-post-date`, which is how `hFlBYtI7q7o` (a `Done` record from
+  2026-07-11) gained metrics without being re-created.

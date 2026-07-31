@@ -7,16 +7,21 @@ project, `~/claude/Youtube Transcripts`) can turn them into teardowns, digests a
 
 This repo owns **capture only**. Triage, treatment, and everything downstream lives in the refinery.
 
-## Current state — 2026-07-29
+## Current state — 2026-07-30
 
-**Capture is pivoting from browser automation to a hosted scraper.** Five months of work proved that
-the transcript can be *extracted* reliably but not *delivered* reliably without a human clicking. The
-decision record and the full evidence are in `docs/archive/FINDINGS-youtube-automation.md` — **read
-§1 before proposing any change to the capture mechanism.**
+**The pivot from browser automation to a hosted scraper is complete.** Five months of work proved
+that the transcript can be *extracted* reliably but not *delivered* reliably without a human
+clicking. The decision record and the full evidence are in
+`docs/archive/FINDINGS-youtube-automation.md` — **read §1 before proposing any change to the capture
+mechanism.**
+
+Capture is no longer the constraint. Unattended batch sweeps run on one command, and the binding
+limit is now the **human review gate** downstream in the refinery. Read that as: the useful work
+left in this repo is mostly *not* "capture more," it's making what's captured easier to triage.
 
 | Path | Status |
 |------|--------|
-| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29 (branch `feat/apify-normalizer`) |
+| Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29, extended to metrics + batch sweeps 2026-07-30 (branch `feat/metrics-fields`) |
 | Chrome extension (`chrome-extension/`) | **Frozen fallback** — works, no further investment |
 | YouTube Data API v3 | Permanently closed — ownership dealbreaker |
 | Direct HTTP / `timedtext` from our own IP | Permanently closed — 429 `IpBlocked` |
@@ -31,25 +36,42 @@ GUI automation) and B (direct HTTP) are closed.
 **The extension stays loaded and working.** It's the right tool for "this one video, right now, no
 cost." It is not the right tool for unattended volume, and it should not be developed further.
 
-## Active work — Apify → Airtable normalizer `[working; proven live 2026-07-29]`
+## Active work — Apify → Airtable normalizer `[working; proven live 2026-07-30]`
 
-Run it: `cd normalizer && node apify-harvest.js --channel-url <url> --max-results <n>
---oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]`. `--max-results` and
-`--oldest-post-date` are mandatory by design. Details and the live verification table:
-`docs/NORMALIZER-MANIFEST.md`.
+Run it, one channel:
+
+```
+cd normalizer && node apify-harvest.js --channel-url <url> --max-results <n> \
+  --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
+```
+
+Or sweep every Channel with `Harvest?` ticked, using its `Source URL`:
+
+```
+cd normalizer && node apify-harvest.js --from-airtable --max-results <n> --oldest-post-date "30 days"
+```
+
+`--max-results` and `--oldest-post-date` are mandatory by design **in both modes** — batch
+multiplies the cost by the channel count, so it needs more bounding, not less. Details and the live
+verification tables: `docs/NORMALIZER-MANIFEST.md`.
 
 ```
 Airtable Channels (Harvest? · Source URL · Last harvested · Track)
-        ↓ read config, check Queued-count ceiling
+        ↓ read config, re-check Queued-count ceiling BEFORE EACH CHANNEL
 Apify run: startUrls + oldestPostDate + maxResults + downloadSubtitles
         ↓ dataset
-Normalizer (this repo, Node — reuses lib/transcript-utils.js)
+Normalizer (this repo, Node — reuses chrome-extension/lib/transcript-utils.js)
    parse subtitles → {text,start} · find-or-create Channel · upsert by Video ID
+   metrics + description + links → updateFields · channel stats → Channels
         ↓
 Videos: Triage Status=Queued · Intake Source=Sweep · Track via Channel link
         ↓ unchanged
 AIHS refinery: triage → teardown/digest → Ideas → human review gate
 ```
+
+The ceiling is re-checked **per channel**, not once per run: a single up-front check would let one
+verdict wave ten channels through, which is a guardrail that stops guarding exactly when volume
+arrives.
 
 Decisions already made (2026-07-29):
 
@@ -59,21 +81,34 @@ Decisions already made (2026-07-29):
   and adding a channel shouldn't need a commit.
 - Ship a `--dry-run` that prints intended writes and touches nothing, **before** it ever writes.
 
-Guardrails agreed for first run, because removing capture friction removes the accidental throttle on
-intake (the refinery's real bottleneck is a human review gate):
+Guardrails, because removing capture friction removes the accidental throttle on intake (the
+refinery's real bottleneck is a human review gate). All shipped except the last:
 
-- `maxResults` **and** a date filter mandatory on every run. No unbounded channel pulls.
-- `Intake Source` field on Videos — distinguish hand-curated (Watch Later) from swept, so triage can
-  be stricter on sweeps.
-- A **Track-unset** triage view. Bulk ingest creates Channels with blank `Track`, and the refinery's
-  working view filters `Track = AIHS OR Tooling-watch` — so blank-Track videos vanish *silently*
-  rather than failing loudly.
-- A queue-depth ceiling: refuse to harvest while `Queued` is above threshold.
+- ✅ `maxResults` **and** a date filter mandatory on every run, both modes. No unbounded pulls.
+- ✅ `Intake Source` on Videos — hand-curated (`Watch Later`) vs swept (`Sweep`), so triage can be
+  stricter on sweeps. Everything triaged before 2026-07-30 was hand-picked; that's no longer true.
+- ✅ Queue-depth ceiling, **re-checked before each channel** in batch mode.
+- ⬜ A **Track-unset** view on Channels. Bulk ingest creates Channels with blank `Track`, and the
+  refinery's working view filters `Track = AIHS OR Tooling-watch` — so blank-Track videos vanish
+  *silently* rather than failing loudly. **4 of 88 Channels** are currently blank
+  (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`). Manual UI step — the
+  Airtable MCP has no create-view tool.
 
-**Next step is cheap and comes first:** one manual Apify run against a single channel with
-`maxResults: 5` (~$0.02) to read the *actual* dataset shape. The design above assumes an output
-contract inferred from a schema, not observed from a real item — which is the same class of mistake as
-trusting `data-save-state` over the Airtable write.
+### Where things stand, and what's actually next
+
+Live counts as of 2026-07-30: **106 Videos** (16 `Queued`, ceiling 30), **88 Channels**, 5 with
+`Harvest?` ticked (`@WayneStLedger`, `@M365CopilotConnection`, `@MicrosoftCommunityLearning`,
+`@KevinStratvert`, `@your365coach`).
+
+1. **Triage the 16 Queued** before sweeping more — the ceiling will halt a batch partway at 30, by
+   design. This is the bottleneck; adding capture volume against it is the one move that makes
+   things worse.
+2. **Commit `feat/metrics-fields`** — the metrics/batch work is verified live but was left
+   uncommitted.
+3. Build the Track-unset view (above).
+4. Decide unattended invocation — cron, a scheduled task, or stay manual. `--from-airtable` makes
+   this a single command with no channel list baked into the repo, so nothing blocks it technically.
+   The question is whether *capture* should be automated while triage isn't.
 
 Actor input keys (verified 2026-07-29 against the published schema and two live channel-mode runs):
 `startUrls`, `maxResults`, `maxResultsShorts`, `maxResultStreams`, `oldestPostDate`, `dateFilter`,
@@ -98,7 +133,15 @@ correction.
   `Triage Status` (default Queued), `Thumbnail URL`, `Thumbnail (Image)`, `Transcript (Full)`,
   `Transcript (Timestamped)` (JSON array of `{text, start}`), `Transcript Language`,
   `Transcript Source`, `Channel` (link)
+  - **Metrics/repurposing (added 2026-07-30)** — `Published At`, `View Count`, `Like Count`,
+    `Comment Count`, `Duration`, `Description`, `Description Links`, `Hashtags`,
+    `Metrics Captured At`, plus formulas `Views per Day` and `Engagement Rate %`. All written to
+    `updateFields`, so **a re-sweep is the metrics-refresh mechanism** — there is no other one.
+    Metrics are overwritten in place; only `Metrics Captured At` keeps them honest. No history.
 - **Channels** `tblaTYkbXc072XEsT` — find-or-create by `Channel Handle`
+  - Harvest config: `Harvest?` (checkbox), `Source URL`, `Last harvested` (stamped only after a
+    sweep with zero errors, so a failure stays visibly stale)
+  - Stats: `Subscribers`, `Total Videos`, `Total Views`, `Channel Description`, `Stats Captured At`
 
 ### Write invariants — non-negotiable, inherited by the normalizer
 
@@ -109,7 +152,11 @@ correction.
    is what both it and `background.js` used to do. (`Video ID oTphk2SVHNc` was in exactly this state
    until 2026-07-29; the two records held identical transcripts but disjoint links — 25 Shots on one,
    the Channel link and provenance on the other — so they were merged, not parked.)
-3. **Never touch `Triage Status` on update.** Set `Queued` on create only.
+3. **Never touch `Triage Status` on update.** Set `Queued` on create only. The Channels analogue is
+   **`Track`**: `upsertChannel` now PATCHes stats onto existing rows, and it must never write
+   `Track`. Both are human-owned routing, and both fail silently — a clobbered `Track` drops the
+   channel out of the working view without erroring. The protection is structural, not a rule to
+   remember: `transform.js` builds the stats object and `Track` is simply never in it.
 4. **Verify the write by querying `Video ID`.** Never trust a status flag — a reported `error` can be
    a false negative after a successful save. Acting on one caused a duplicate record on 2026-07-26.
 5. **Truncate transcripts over 100k chars** via `lib/transcript-utils.js` (GH-64), keeping
@@ -123,6 +170,14 @@ correction.
    **cannot** catch this, because it performs no writes. Machine-written values follow a slug
    convention: `youtube-web-ui-dom` (extension), `apify-youtube-scraper` (normalizer).
    Note the Airtable API cannot add choices — that is a manual UI step.
+
+   **Corollary: no actor-supplied value may go into a singleSelect/multipleSelects.** We control
+   the provenance slugs, so those are safe as selects. We do not control what YouTube returns, so a
+   field like `Hashtags` — which looks exactly like a multi-select — must be plain text, or the
+   first unseen tag 422s the whole record. Selects are for our vocabulary, never theirs.
+
+8. **A new field must exist in Airtable before anything writes to it.** An unknown field name 422s
+   the entire record, and `--dry-run` cannot catch that either, for the same reason. Schema first.
 
 Rationale and the incidents behind each: `docs/archive/FINDINGS-youtube-automation.md` §4–5.
 
@@ -164,12 +219,22 @@ No build step. Vanilla JS. Load unpacked at `chrome://extensions/`.
 
 ## Open issues
 
-- **GH-65 (open)** — lossless full-transcript storage, which would remove the GH-64 truncation shim.
-  Apify's `saveSubsToKVS` may resolve this nearly free by giving a hosted file URL. **Verify retention
-  first** — unnamed Apify key-value stores expire (roughly 7 days on lower plans), so a stored pointer
-  could rot. Named store, or copy the file out.
+- **GH-65 (open, low priority)** — lossless full-transcript storage, which would remove the GH-64
+  truncation shim. Apify's `saveSubsToKVS` may resolve this nearly free by giving a hosted file URL.
+  **Verify retention first** — unnamed Apify key-value stores expire (roughly 7 days on lower plans),
+  so a stored pointer could rot. Named store, or copy the file out. Note observed transcripts run
+  11k–44k chars against a 100k limit, so nothing has actually truncated yet — this is a latent
+  problem, not a live one.
 - **GH-64 (fixed)** — truncation shim in place, but it now runs unattended with nobody reading the
   warning.
+- **No metrics history.** `View Count` and friends are overwritten on each sweep with only
+  `Metrics Captured At` to date them, so you can see a video's velocity *now* but not its trend. A
+  snapshot table is the upgrade path if "is this angle gaining?" becomes worth answering; it was
+  deliberately not built (2026-07-30 decision).
+- **Formula display precision is a UI-only setting.** `Views per Day` and `Engagement Rate %` are
+  formatted to 0 decimals because the API can't set it (`update_field` accepts only
+  `options.formula`). Display only — the stored values are exact. Fix in the Airtable UI if the grid
+  needs decimals.
 - **GH-69, GH-70 (to close)** — click-delivery investigations, superseded by the Apify pivot. Findings
   preserved in the archive doc.
 - Provenance guard (GH-68 fix item #2) never implemented. Only matters if the extension is revived,

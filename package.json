@@ -5,6 +5,6 @@
   "description": "YouTube transcript capture into Airtable — root task runner for the two test suites",
   "scripts": {
     "setup": "npm ci --prefix chrome-extension",
-    "check": "npm test --prefix chrome-extension && npm test --prefix normalizer"
+    "check": "node scripts/check-evidence-dates.js && npm test --prefix chrome-extension && npm test --prefix normalizer"
   }
 }

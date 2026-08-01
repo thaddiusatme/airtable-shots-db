@@ -45,15 +45,37 @@ cd normalizer && node apify-harvest.js --channel-url <url> --max-results <n> \
   --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
 ```
 
+Or one playlist (added 2026-07-30, see below):
+
+```
+cd normalizer && node apify-harvest.js --playlist-url <url> --max-results <n> \
+  --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
+```
+
 Or sweep every Channel with `Harvest?` ticked, using its `Source URL`:
 
 ```
 cd normalizer && node apify-harvest.js --from-airtable --max-results <n> --oldest-post-date "30 days"
 ```
 
-`--max-results` and `--oldest-post-date` are mandatory by design **in both modes** — batch
-multiplies the cost by the channel count, so it needs more bounding, not less. Details and the live
-verification tables: `docs/NORMALIZER-MANIFEST.md`.
+`--max-results` and `--oldest-post-date` are mandatory by design **in all three modes** — batch
+multiplies the cost by the channel count, so it needs more bounding, not less. `--channel-url`,
+`--playlist-url`, and `--from-airtable` are mutually exclusive channel-selection inputs. Details and
+the live verification tables: `docs/NORMALIZER-MANIFEST.md`.
+
+**`--playlist-url` reconnects a leg that broke in the 2026-07-29 pivot.** `watch-later-sort` (the
+`~/claude/Youtube Transcripts` project) routes videos into `AI (Claude)` / `AI` /
+`Business & Productivity` on the assumption that a playlist harvester picks them up — but that
+harvester was the Chrome-extension per-video panel, retired the same day this normalizer went live,
+and the normalizer that replaced it only took `--channel-url`/`--from-airtable`. Sorting a video into
+one of those three playlists did nothing for capture between 2026-07-29 and 2026-07-30. `--playlist-url`
+closes that gap: the Apify actor's `startUrls` accepts a playlist link exactly like a channel link
+(confirmed against the published input schema), and `transform.js` already derives each video's
+Channel from the dataset item's own `channelUsername`/`channelUrl` rather than from the input URL —
+so a playlist spanning several channels upserts each one correctly with no changes to the rest of the
+pipeline. Not yet wired into `--from-airtable` batch mode (playlists aren't Channels-table rows); for
+now it's a manual one-off, same as `--channel-url`. **LIVE — not applicable**: unit-tested only, not
+yet run against a real playlist. Full detail in `docs/NORMALIZER-MANIFEST.md`.
 
 ```
 Airtable Channels (Harvest? · Source URL · Last harvested · Track)

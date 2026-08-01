@@ -67,11 +67,15 @@ function loadDotEnv() {
 
 const USAGE = `Usage:
   node apify-harvest.js --channel-url <url> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
+  node apify-harvest.js --playlist-url <url> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
   node apify-harvest.js --from-airtable  --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
 
 Channel selection (exactly one):
   --channel-url <url>          One channel, e.g. https://www.youtube.com/@Someone
-  --from-airtable              Every Channel row with Harvest? ticked, using its Source URL
+  --playlist-url <url>         One playlist, e.g. https://www.youtube.com/playlist?list=PL...
+                                Videos can span multiple channels; each is upserted using its
+                                own channelUsername from the dataset item, same as channel mode.
+  --from-airtable               Every Channel row with Harvest? ticked, using its Source URL
 
 Required in both modes (guardrail: no unbounded channel pulls):
   --max-results <n>            Max regular videos to pull, PER CHANNEL
@@ -97,6 +101,9 @@ function parseArgs(argv) {
     switch (arg) {
       case '--channel-url':
         args.channelUrl = takeValue();
+        break;
+      case '--playlist-url':
+        args.playlistUrl = takeValue();
         break;
       case '--max-results':
         args.maxResults = Number(takeValue());
@@ -141,11 +148,15 @@ function elideTranscripts(fields) {
 
 function validateArgs(args) {
   const errors = [];
-  // Exactly one channel source. Accepting both would silently ignore one of
-  // them, and the harvest config living in two places is the failure mode the
-  // Airtable-driven design exists to avoid.
-  if (!args.channelUrl && !args.fromAirtable) errors.push('one of --channel-url or --from-airtable is required');
-  if (args.channelUrl && args.fromAirtable) errors.push('--channel-url and --from-airtable are mutually exclusive');
+  // Exactly one channel source. Accepting more than one would silently ignore
+  // the others, and the harvest config living in two places is the failure
+  // mode the Airtable-driven design exists to avoid.
+  const sourceCount = [args.channelUrl, args.playlistUrl, args.fromAirtable].filter(Boolean).length;
+  if (sourceCount === 0) {
+    errors.push('one of --channel-url, --playlist-url, or --from-airtable is required');
+  } else if (sourceCount > 1) {
+    errors.push('--channel-url, --playlist-url, and --from-airtable are mutually exclusive');
+  }
   // Per-channel bounds stay mandatory in batch mode: --from-airtable multiplies
   // the cost by the number of ticked channels, so it needs MORE bounding, not less.
   if (!args.maxResults || args.maxResults <= 0) errors.push('--max-results is required and must be > 0 (guardrail: no unbounded pulls)');
@@ -276,6 +287,18 @@ async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, ca
 // Harvest?-ticked row in Airtable. A ticked row with no Source URL is a
 // configuration mistake, so warn rather than guessing a URL from the handle.
 async function resolveChannels(args, airtableKey, baseId) {
+  // Playlist mode is a third channel-selection input, not a new data path:
+  // the actor's startUrls accepts a playlist link the same way it accepts a
+  // channel link (confirmed against the published input schema), and
+  // transform.js already derives each video's Channel from the dataset
+  // item's own channelUsername/channelUrl rather than from the input URL —
+  // so a playlist spanning several channels upserts each one correctly with
+  // no changes below this point. `recordId: null` means no Channels row gets
+  // `Last harvested` stamped, same as a one-off --channel-url run.
+  if (args.playlistUrl) {
+    return [{ recordId: null, channelName: `playlist: ${args.playlistUrl}`, sourceUrl: args.playlistUrl }];
+  }
+
   if (!args.fromAirtable) {
     return [{ recordId: null, channelName: args.channelUrl, sourceUrl: args.channelUrl }];
   }

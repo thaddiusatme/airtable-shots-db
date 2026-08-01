@@ -26,7 +26,13 @@ Report all four in the pull request. The template gives you the boxes.
   A test that has never been observed failing is not evidence that it tests anything.
 - **GREEN** — the same focused test passing after the implementation.
 - **REGRESSION** — `npm run check` fully green. Both suites.
-- **LIVE** — Airtable/Apify verification, **or an explicit "not applicable."** Never blank.
+- **LIVE** — Airtable/Apify verification, **or an explicit "not applicable."** Never blank. A LIVE
+  claim must cite an **Apify run ID** or the **Airtable record ID(s)** it verified — both are
+  checkable after the fact by anyone; "I ran it" is not. `npm run check` also runs
+  `scripts/check-evidence-dates.js`, which fails the build if a `LIVE verified <date>` /
+  `Verified live <date>` claim in tracked markdown is dated later than today. That catches
+  future-dating; it does not catch a plausibly-dated fabrication — the run-ID requirement is what
+  makes a claim externally verifiable, and is the control to actually rely on.
 
 ## What LIVE means, and when it is "not applicable"
 

@@ -225,6 +225,43 @@ Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v
   (`Track = AIHS OR Tooling-watch`). The CLI surfaces this; it does not (and shouldn't) guess a
   Track value.
 
+## 2026-07-30 — `--playlist-url` mode
+
+Added to reconnect the Watch Later → playlist → Airtable leg documented as broken in `CLAUDE.md`
+"Active work": the browser-extension playlist harvest (`harvest-playlist`, `scheduled-playlist-harvest`)
+was the thing that actually drained `AI (Claude)` / `AI` / `Business & Productivity` into Airtable, and
+it went dark when the extension was frozen 2026-07-29 in favor of this (channel-only) normalizer.
+
+No new data path — a playlist is a third value for the same "channel selection" input already in
+`resolveChannels()`/`sweepChannel()`. Two facts made this a small change rather than a redesign:
+
+- The actor's `startUrls` field accepts a playlist URL
+  (`https://www.youtube.com/playlist?list=...`) exactly like a channel URL — confirmed against the
+  published input schema at `apify.com/streamers/youtube-scraper/input-schema`, 2026-07-30. Not
+  previously probed against a live playlist run (see LIVE gap below).
+- `transform.js`'s `buildVideoFields()` already derives each item's Channel from the dataset item's
+  own `channelUsername`/`channelUrl` (`toHandleKey()`), never from the input URL. A playlist can span
+  many channels; `sweepChannel()`'s per-run `channelCache` already keys by that derived handle, so
+  each distinct channel in a playlist's results resolves/creates correctly with zero changes below
+  `resolveChannels()`.
+
+`--channel-url`, `--playlist-url`, and `--from-airtable` are now mutually exclusive
+channel-selection inputs (`validateArgs` in `apify-harvest.js`), each requiring the same
+`--max-results`/`--oldest-post-date` bounds. Playlist mode always has `recordId: null` (there's no
+Channels-table row for a playlist), so it never stamps `Last harvested` — same behavior as a one-off
+`--channel-url` run.
+
+**Not yet wired into `--from-airtable`.** The three AIHS-relevant playlists aren't Channels rows, so
+batch mode can't pick them up automatically yet — this is a manual one-off command for now, the same
+tier as `--channel-url`. If the cadence turns out to want it automated, the natural next step is a
+separate "Harvest playlists" config surface (a new small table, or an `Intake Source = Watch Later`
+convention read from somewhere), not folding playlists into the Channels table.
+
+**LIVE — not applicable.** Playlist mode is unit-tested (`validateArgs`'s three-way mutual exclusion,
+`resolveChannels()` with `recordId: null`, and the reasoning that `transform.js` derives Channel per
+dataset item) but has not been run against a live playlist. No Apify run ID or Airtable record ID
+exists to cite for it. Run it live before claiming otherwise.
+
 ## Next step, in order
 
 The original steps 1–3 are **done** — dry-run smoke test, channel-mode probe, first real write, and

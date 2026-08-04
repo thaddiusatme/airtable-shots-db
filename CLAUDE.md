@@ -199,7 +199,8 @@ correction.
    options on a typo). Check the option exists before adding a new provenance value. A `--dry-run`
    **cannot** catch this, because it performs no writes. Machine-written values follow a slug
    convention: `youtube-web-ui-dom` (extension), `apify-youtube-scraper` (normalizer).
-   Note the Airtable API cannot add choices — that is a manual UI step.
+   Note the Airtable API cannot add choices — that is a manual UI step (see the
+   `airtable-ui-fallback` skill).
 
    **Corollary: no actor-supplied value may go into a singleSelect/multipleSelects.** We control
    the provenance slugs, so those are safe as selects. We do not control what YouTube returns, so a
@@ -258,6 +259,11 @@ with no credentials — so it verifies the first three and never the fourth.
 - **`apify-harvest`** — run a bounded channel sweep through the normalizer and verify the writes
   landed. Encodes the non-negotiables (verify by querying, check Channels didn't fork, never guess
   `Track`, never touch `Triage Status`) and the error playbook.
+- **`airtable-ui-fallback`** — drives the Airtable web UI (via browser tools) for the one thing
+  the MCP server can't do: adding choices to an existing select field. Use when `update_field`'s
+  lack of a `choices` param blocks a write invariant #7 fix. Uses the record-detail modal, not the
+  grid, since the grid's canvas rendering is unreliable for precise clicks in an unsupported-browser
+  session.
 - Retired 2026-07-29 along with the browser-automation line: `harvest-playlist`, `verify-panel`,
   `youtube-panel-triage`. `apify-harvest` replaces them.
 
@@ -292,6 +298,12 @@ No build step. Vanilla JS. Load unpacked at `chrome://extensions/`.
 - Provenance guard (GH-68 fix item #2) never implemented. Only matters if the extension is revived,
   but the *principle* — verify provenance, never trust that state reached `saved` — carries over to
   the normalizer.
+- **Shared base now has `Ideas` (`tblAE0Rsadl6E1plB`) and `Posts` (`tblf2fmwBUMZZY2LL`) tables**,
+  owned by the AIHS refinery / Threads pipeline project (2026-08-03). `docs/NORMALIZER-MANIFEST.md`
+  and `normalizer/audit.js` predate both and don't know they exist — don't mistake either table for
+  dead schema during exploration, and don't extend `audit.js` to cover them without checking with
+  the refinery project first, since their write invariants (draft-only Metricool pushes, never
+  auto-publish) live there, not here.
 
 ## Dead — do not resurrect
 

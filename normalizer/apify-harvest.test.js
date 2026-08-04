@@ -47,7 +47,7 @@ test('--help short-circuits without needing the mandatory args', () => {
 // The mandatory bounds are the guardrail against an unbounded channel pull,
 // so they must fail closed — dry run or not.
 test('validateArgs requires a channel source and all bounds', () => {
-  assert.throws(() => validateArgs(parseArgs([])), /one of --channel-url or --from-airtable is required/);
+  assert.throws(() => validateArgs(parseArgs([])), /one of --channel-url, --playlist-url, or --from-airtable is required/);
   assert.throws(() => validateArgs(parseArgs([])), /--max-results is required/);
   assert.throws(() => validateArgs(parseArgs([])), /--oldest-post-date is required/);
 });
@@ -72,6 +72,57 @@ test('--from-airtable still requires the per-channel bounds', () => {
 test('parseArgs defaults --from-airtable to false', () => {
   assert.equal(parseArgs(REQUIRED).fromAirtable, false);
   assert.equal(parseArgs(['--from-airtable']).fromAirtable, true);
+});
+
+// --- playlist mode -----------------------------------------------------------
+//
+// The Watch Later -> playlist -> Airtable leg went dark when the browser-
+// extension playlist harvest was retired in favor of the channel-only
+// normalizer. The actor's own docs show startUrls accepts a playlist link
+// (https://www.youtube.com/playlist?list=...) the same way it accepts a
+// channel link, and transform.js already derives Channel per dataset item
+// (not from the input URL), so a playlist is just a third channel-selection
+// mode, not a new data path.
+
+test('parseArgs reads --playlist-url', () => {
+  const args = parseArgs([
+    '--playlist-url', 'https://www.youtube.com/playlist?list=PL123',
+    '--max-results', '5',
+    '--oldest-post-date', '2026-01-01',
+  ]);
+  assert.equal(args.playlistUrl, 'https://www.youtube.com/playlist?list=PL123');
+});
+
+test('validateArgs accepts --playlist-url alone as the channel source', () => {
+  assert.doesNotThrow(() =>
+    validateArgs(parseArgs([
+      '--playlist-url', 'https://www.youtube.com/playlist?list=PL123',
+      '--max-results', '5',
+      '--oldest-post-date', '2026-01-01',
+    ]))
+  );
+});
+
+test('validateArgs rejects --playlist-url combined with --channel-url', () => {
+  const args = parseArgs([...REQUIRED, '--playlist-url', 'https://www.youtube.com/playlist?list=PL123']);
+  assert.throws(() => validateArgs(args), /mutually exclusive/);
+});
+
+test('validateArgs rejects --playlist-url combined with --from-airtable', () => {
+  const args = parseArgs([
+    '--playlist-url', 'https://www.youtube.com/playlist?list=PL123',
+    '--from-airtable',
+    '--max-results', '5',
+    '--oldest-post-date', '2026-01-01',
+  ]);
+  assert.throws(() => validateArgs(args), /mutually exclusive/);
+});
+
+test('validateArgs still requires a channel source when none of the three is given', () => {
+  assert.throws(
+    () => validateArgs(parseArgs([])),
+    /one of --channel-url, --playlist-url, or --from-airtable is required/
+  );
 });
 
 test('validateArgs rejects a zero, negative, or non-numeric --max-results', () => {

@@ -31,15 +31,16 @@ See `docs/TDD-CONTRACT.md`. Fill all four — never leave one blank.
 
 ### LIVE
 
-<!--
-Airtable/Apify verification, or an explicit "not applicable" with the reason.
-"Not applicable" is correct and expected for anything that does not reach Apify or Airtable.
+Check exactly one. No free-text substitute for either box — a prose paragraph is not a run ID.
 
-If it DOES reach them, confirm:
+- [ ] **Not applicable** — this change does not reach Apify or Airtable.
+- [ ] **Run ID + pasted output** — cite an Apify run ID or Airtable record ID(s), and confirm:
   - Videos queried by `Video ID` — exactly one record (invariant 4)
   - Channels did not fork — one row, `@handle` form, not `UC...`
   - `Triage Status` and `Track` untouched on update (invariant 3)
--->
+
+```
+```
 
 ---
 

@@ -14,6 +14,7 @@ longer being developed.
 
 ```
 normalizer/          Apify → Airtable normalizer (Node, no deps) — the primary capture path
+playlist-drain/      Personal → business playlist migration + Airtable-verified drain
 chrome-extension/    Manifest V3 extension — the manual fallback capture path
 docs/TDD-CONTRACT.md One command, four lines of evidence — read before changing anything
 docs/NORMALIZER-MANIFEST.md  normalizer design + live verification tables
@@ -34,9 +35,9 @@ npm run setup
 npm run check
 ```
 
-`setup` runs once per clone (it installs `jsdom`, the extension suite's only dependency). `check`
-runs both suites — `chrome-extension` then `normalizer` — and is what GitHub re-runs on every pull
-request.
+`setup` runs once per clone and installs the extension and playlist-management dependencies.
+`check` runs all three suites — `chrome-extension`, `normalizer`, then `playlist-drain` — and is what
+GitHub re-runs on every pull request.
 
 Every change reports **RED / GREEN / REGRESSION / LIVE** evidence in its pull request. See
 [docs/TDD-CONTRACT.md](docs/TDD-CONTRACT.md) for what each means, when LIVE is legitimately "not
@@ -67,6 +68,15 @@ same; it is for checking the payload, not for saving money.
 Design, guardrails, the write invariants it must honour, and the live verification tables:
 `CLAUDE.md` and [docs/NORMALIZER-MANIFEST.md](docs/NORMALIZER-MANIFEST.md).
 
+## Business-owned playlist migration and drain
+
+`playlist-drain/` recreates the six personal-channel playlists under the business channel and then
+drains a business playlist entry only after Airtable has exactly one matching Video with a nonempty
+transcript. Both commands default to read-only; mutations require `--apply`. The personal playlists
+and Airtable records are never modified. See [playlist-drain/README.md](playlist-drain/README.md).
+The initial live migration and drain evidence is recorded in
+[docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md](docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md).
+
 ## Chrome extension (manual fallback)
 
 1. Load unpacked at `chrome://extensions/` → point it at `chrome-extension/`.
@@ -86,5 +96,6 @@ were established empirically here, and the second was accidentally re-proposed m
 
 ## Environment
 
-`.env` (not committed): `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `APIFY_TOKEN`. CI needs none of
-these and is never given them.
+`.env` (not committed): `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `APIFY_TOKEN`, Google OAuth client
+credentials, the business refresh token, and the separate personal read-only refresh token. CI
+needs none of these and is never given them.

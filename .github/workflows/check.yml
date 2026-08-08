@@ -18,13 +18,15 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: chrome-extension/package-lock.json
+          cache-dependency-path: |
+            chrome-extension/package-lock.json
+            playlist-drain/package-lock.json
 
-      # `npm ci` only in chrome-extension — it is the only package with a
-      # lockfile, and normalizer has no dependencies at all.
+      # Installs the extension and playlist-management packages. The
+      # normalizer deliberately remains dependency-free.
       - run: npm run setup
 
-      # No `env:` block and no `secrets.` reference, on purpose. Both suites are
+      # No `env:` block and no `secrets.` reference, on purpose. All suites are
       # hermetic: airtable-client.test.js stubs globalThis.fetch and nothing
       # reads process.env. CI verifies RED/GREEN/REGRESSION; LIVE verification
       # against Airtable and Apify is a human-reviewed attestation, never a job

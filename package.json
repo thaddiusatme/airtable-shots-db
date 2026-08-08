@@ -2,9 +2,9 @@
   "name": "airtable-shots-db",
   "version": "0.1.0",
   "private": true,
-  "description": "YouTube transcript capture into Airtable — root task runner for the two test suites",
+  "description": "YouTube transcript capture and playlist lifecycle — root task runner for all test suites",
   "scripts": {
-    "setup": "npm ci --prefix chrome-extension",
-    "check": "node scripts/check-evidence-dates.js && npm test --prefix chrome-extension && npm test --prefix normalizer"
+    "setup": "npm ci --prefix chrome-extension && npm ci --prefix playlist-drain",
+    "check": "node scripts/check-evidence-dates.js && npm test --prefix chrome-extension && npm test --prefix normalizer && npm test --prefix playlist-drain && npm test --prefix maintenance"
   }
 }

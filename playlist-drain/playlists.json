@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "businessChannelId": "UCQa5rETk8YLryqNlJzWJ2PA",
+  "privacyStatus": "unlisted",
+  "playlists": [
+    {
+      "name": "AI (Claude)",
+      "sourcePlaylistId": "PLVwTAkoVGJsY",
+      "destinationPlaylistId": "PLTJ-2ZXfYpxM"
+    },
+    {
+      "name": "Content Creation",
+      "sourcePlaylistId": "PLZ8PtMY63lo8kN6_vyVEkm7fOuiOxfIxT",
+      "destinationPlaylistId": "PLF9bKYfkt-fQ"
+    },
+    {
+      "name": "Business & Productivity",
+      "sourcePlaylistId": "PLZ8PtMY63lo86BcUEo__5Y2bT6fr_iIhd",
+      "destinationPlaylistId": "PLFN18u6eRm4s"
+    },
+    {
+      "name": "Tech & Development",
+      "sourcePlaylistId": "PLZ8PtMY63lo9pFCCcA8CZhvCrQawtGjr5",
+      "destinationPlaylistId": "PLcfSwgzg-O8w"
+    },
+    {
+      "name": "Education & World",
+      "sourcePlaylistId": "PLZ8PtMY63lo_EU0aRfGu6T0QvUw-WAbvS",
+      "destinationPlaylistId": "PLaHx3tpNgX4s"
+    },
+    {
+      "name": "Finance & Business",
+      "sourcePlaylistId": "PLZ8PtMY63lo-hBE0TE1Z5S7ZEJY3GIwBo",
+      "destinationPlaylistId": "PLUF_xK0hS7zQ"
+    }
+  ]
+}

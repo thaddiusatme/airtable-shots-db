@@ -145,6 +145,11 @@ pipeline-server/node_modules/
 chrome-extension/node_modules/
 node_modules/
 
+# maintenance/business-sweep.js persistent local state — run lock and the
+# write-ahead ledger. Deliberately real files, not ephemeral, but they're
+# machine-specific run history, not something to commit.
+maintenance/state/
+
 # Spyder project settings
 .spyderproject
 .spyproject

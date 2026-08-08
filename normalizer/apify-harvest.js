@@ -68,6 +68,7 @@ function loadDotEnv() {
 const USAGE = `Usage:
   node apify-harvest.js --channel-url <url> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
   node apify-harvest.js --playlist-url <url> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
+  node apify-harvest.js --video-urls <url1,url2,...> --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
   node apify-harvest.js --from-airtable  --max-results <n> --oldest-post-date <YYYY-MM-DD> [options]
 
 Channel selection (exactly one):
@@ -75,6 +76,11 @@ Channel selection (exactly one):
   --playlist-url <url>         One playlist, e.g. https://www.youtube.com/playlist?list=PL...
                                 Videos can span multiple channels; each is upserted using its
                                 own channelUsername from the dataset item, same as channel mode.
+                                NOTE: the actor cannot read UNLISTED playlists (confirmed live
+                                2026-08-06, NO_VIDEOS) — use --video-urls for those instead.
+  --video-urls <url1,url2,...> Specific videos, full watch URLs, comma-separated. No channel or
+                                playlist scope — exactly the videos listed, each upserted using its
+                                own channelUsername from the dataset item, same as the other modes.
   --from-airtable               Every Channel row with Harvest? ticked, using its Source URL
 
 Required in both modes (guardrail: no unbounded channel pulls):
@@ -104,6 +110,9 @@ function parseArgs(argv) {
         break;
       case '--playlist-url':
         args.playlistUrl = takeValue();
+        break;
+      case '--video-urls':
+        args.videoUrls = takeValue();
         break;
       case '--max-results':
         args.maxResults = Number(takeValue());
@@ -146,32 +155,68 @@ function elideTranscripts(fields) {
   return out;
 }
 
+// Split a comma-separated --video-urls value into trimmed, non-empty URLs.
+// Shared by validateArgs (to count them) and resolveChannels (to use them),
+// so the two can never disagree on what counts as "a URL."
+function parseVideoUrls(raw) {
+  return String(raw || '').split(',').map((u) => u.trim()).filter(Boolean);
+}
+
 function validateArgs(args) {
   const errors = [];
   // Exactly one channel source. Accepting more than one would silently ignore
   // the others, and the harvest config living in two places is the failure
   // mode the Airtable-driven design exists to avoid.
-  const sourceCount = [args.channelUrl, args.playlistUrl, args.fromAirtable].filter(Boolean).length;
+  const sourceCount = [args.channelUrl, args.playlistUrl, args.videoUrls, args.fromAirtable].filter(Boolean).length;
   if (sourceCount === 0) {
     errors.push('one of --channel-url, --playlist-url, or --from-airtable is required');
   } else if (sourceCount > 1) {
-    errors.push('--channel-url, --playlist-url, and --from-airtable are mutually exclusive');
+    errors.push('--channel-url, --playlist-url, --video-urls, and --from-airtable are mutually exclusive');
   }
   // Per-channel bounds stay mandatory in batch mode: --from-airtable multiplies
   // the cost by the number of ticked channels, so it needs MORE bounding, not less.
   if (!args.maxResults || args.maxResults <= 0) errors.push('--max-results is required and must be > 0 (guardrail: no unbounded pulls)');
   if (!args.oldestPostDate) errors.push('--oldest-post-date is required (guardrail: no unbounded pulls) — format YYYY-MM-DD');
+  if (args.videoUrls) {
+    const urls = parseVideoUrls(args.videoUrls);
+    if (urls.length === 0) {
+      errors.push('--video-urls must contain at least one URL');
+    } else if (args.maxResults && args.maxResults < urls.length) {
+      // Unlike channel/playlist mode, these videos were named explicitly — a
+      // too-low cap wouldn't just bound cost, it would silently drop one of
+      // the exact videos asked for. Refuse rather than truncate quietly.
+      errors.push(`--max-results (${args.maxResults}) is less than the ${urls.length} URL(s) in --video-urls — it would silently drop some of the videos you explicitly listed; raise --max-results to at least ${urls.length}`);
+    }
+  }
   if (errors.length) {
     throw new Error(`Invalid arguments:\n  - ${errors.join('\n  - ')}`);
   }
 }
 
+// videoId lists (not just counts) so a caller can reconcile "what I asked
+// for" against "what actually landed" — added for the business-playlist
+// maintenance orchestrator (maintenance/business-sweep.js), which must fail
+// loudly on a gap rather than trust an aggregate count.
 function emptySummary() {
-  return { created: 0, updated: 0, wouldCreate: 0, wouldUpdate: 0, skipped: 0, channelsCreated: 0, errors: 0 };
+  return {
+    created: 0,
+    updated: 0,
+    wouldCreate: 0,
+    wouldUpdate: 0,
+    skipped: 0,
+    channelsCreated: 0,
+    errors: 0,
+    returnedVideoIds: [],
+    processedVideoIds: [],
+    skippedVideoIds: [],
+  };
 }
 
 function mergeSummary(total, part) {
-  for (const key of Object.keys(total)) total[key] += part[key];
+  for (const key of Object.keys(total)) {
+    if (Array.isArray(total[key])) total[key] = total[key].concat(part[key]);
+    else total[key] += part[key];
+  }
 }
 
 // In batch mode one --save-raw path would have each channel overwrite the last,
@@ -191,8 +236,14 @@ function rawPathFor(basePath, channel, index, isBatch) {
 async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, capturedAt, rawPath }) {
   const summary = emptySummary();
 
+  // Video-urls mode passes multiple startUrls entries (one per named video)
+  // in a single actor call; every other mode passes exactly one.
+  const startUrls = channel.sourceUrls
+    ? channel.sourceUrls.map((url) => ({ url }))
+    : [{ url: channel.sourceUrl }];
+
   const input = {
-    startUrls: [{ url: channel.sourceUrl }],
+    startUrls,
     maxResults: args.maxResults,
     oldestPostDate: args.oldestPostDate,
     downloadSubtitles: true,
@@ -205,6 +256,7 @@ async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, ca
   console.log(`[apify] running actor with input:`, JSON.stringify(input, null, 2));
   const items = await runActorSync({ token: apifyToken, input });
   console.log(`[apify] dataset returned ${items.length} item(s)`);
+  summary.returnedVideoIds = items.map((item) => item?.id).filter(Boolean);
 
   // Write the raw capture before any processing, so a later failure still
   // leaves the observed output on disk to inspect and turn into a fixture.
@@ -224,6 +276,7 @@ async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, ca
     if (built.skipped) {
       console.warn(`[skip] ${item?.id || '(no id)'}: ${built.skipped}`);
       summary.skipped++;
+      summary.skippedVideoIds.push(item?.id || '(no id)');
       continue;
     }
 
@@ -268,6 +321,7 @@ async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, ca
       else if (videoResult.action === 'updated') summary.updated++;
       else if (videoResult.action === 'would-create') summary.wouldCreate++;
       else if (videoResult.action === 'would-update') summary.wouldUpdate++;
+      summary.processedVideoIds.push(built.videoId);
 
       // Dry-run's whole purpose is to show the payload, so print it. Transcript
       // bodies are elided — they're up to 100k chars and would bury the rest.
@@ -297,6 +351,18 @@ async function resolveChannels(args, airtableKey, baseId) {
   // `Last harvested` stamped, same as a one-off --channel-url run.
   if (args.playlistUrl) {
     return [{ recordId: null, channelName: `playlist: ${args.playlistUrl}`, sourceUrl: args.playlistUrl }];
+  }
+
+  // Video-urls mode: the actor cannot read unlisted playlists (confirmed live
+  // 2026-08-06 — NO_VIDEOS against two real unlisted playlists, while an
+  // identical call against a public playlist worked). The individual videos
+  // in an unlisted playlist are not themselves unlisted, so this mode feeds
+  // their watch URLs straight into startUrls as a batch, one actor call for
+  // however many videos are listed. `sourceUrls` (plural) signals to
+  // sweepChannel() that this "channel" is really N independent video URLs.
+  if (args.videoUrls) {
+    const urls = parseVideoUrls(args.videoUrls);
+    return [{ recordId: null, channelName: `videos: ${urls.length} url(s)`, sourceUrls: urls }];
   }
 
   if (!args.fromAirtable) {
@@ -413,4 +479,13 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, parseDotEnv, validateArgs, elideTranscripts, USAGE };
+module.exports = {
+  parseArgs,
+  parseDotEnv,
+  validateArgs,
+  elideTranscripts,
+  emptySummary,
+  mergeSummary,
+  sweepChannel,
+  USAGE,
+};

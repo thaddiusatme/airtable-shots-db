@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseArgs, parseDotEnv, validateArgs, elideTranscripts } = require('./apify-harvest');
+const { parseArgs, parseDotEnv, validateArgs, elideTranscripts, emptySummary, mergeSummary } = require('./apify-harvest');
 
 const REQUIRED = ['--channel-url', 'https://www.youtube.com/@X', '--max-results', '2', '--oldest-post-date', '2026-01-01'];
 
@@ -125,6 +125,78 @@ test('validateArgs still requires a channel source when none of the three is giv
   );
 });
 
+// --- video-urls mode ---------------------------------------------------------
+//
+// Discovered 2026-08-06: the Apify streamers/youtube-scraper actor cannot read
+// UNLISTED playlists (NO_VIDEOS, confirmed live against two real playlists,
+// while an identical call against a public playlist worked). The individual
+// videos in those playlists are not themselves unlisted, so feeding their
+// watch URLs straight into startUrls sidesteps the blocker entirely — and per
+// lib/apify-client.js's header comment, a single-video startUrls run is the
+// ORIGINAL, most-verified shape this actor was probed with (2026-07-29),
+// more so than channel or playlist mode.
+
+test('parseArgs reads --video-urls', () => {
+  const args = parseArgs([
+    '--video-urls', 'https://www.youtube.com/watch?v=AAA,https://www.youtube.com/watch?v=BBB',
+    '--max-results', '5',
+    '--oldest-post-date', '2026-01-01',
+  ]);
+  assert.equal(args.videoUrls, 'https://www.youtube.com/watch?v=AAA,https://www.youtube.com/watch?v=BBB');
+});
+
+test('validateArgs accepts --video-urls alone as the channel source', () => {
+  assert.doesNotThrow(() =>
+    validateArgs(parseArgs([
+      '--video-urls', 'https://www.youtube.com/watch?v=AAA',
+      '--max-results', '5',
+      '--oldest-post-date', '2026-01-01',
+    ]))
+  );
+});
+
+test('validateArgs rejects --video-urls combined with --channel-url', () => {
+  const args = parseArgs([...REQUIRED, '--video-urls', 'https://www.youtube.com/watch?v=AAA']);
+  assert.throws(() => validateArgs(args), /mutually exclusive/);
+});
+
+test('validateArgs rejects --video-urls combined with --playlist-url', () => {
+  const args = parseArgs([
+    '--video-urls', 'https://www.youtube.com/watch?v=AAA',
+    '--playlist-url', 'https://www.youtube.com/playlist?list=PL123',
+    '--max-results', '5',
+    '--oldest-post-date', '2026-01-01',
+  ]);
+  assert.throws(() => validateArgs(args), /mutually exclusive/);
+});
+
+test('validateArgs rejects a blank --video-urls', () => {
+  const args = parseArgs(['--video-urls', '  , ,  ', '--max-results', '5', '--oldest-post-date', '2026-01-01']);
+  assert.throws(() => validateArgs(args), /--video-urls must contain at least one URL/);
+});
+
+// Silently dropping a video the user explicitly named is worse than a loud
+// refusal — --max-results is a per-channel COST guardrail everywhere else,
+// but here a too-low value would truncate the exact list asked for.
+test('validateArgs rejects --max-results lower than the --video-urls count', () => {
+  const args = parseArgs([
+    '--video-urls', 'https://www.youtube.com/watch?v=AAA,https://www.youtube.com/watch?v=BBB,https://www.youtube.com/watch?v=CCC',
+    '--max-results', '2',
+    '--oldest-post-date', '2026-01-01',
+  ]);
+  assert.throws(() => validateArgs(args), /--max-results \(2\) is less than the 3 URL\(s\)/);
+});
+
+test('validateArgs accepts --max-results equal to the --video-urls count', () => {
+  assert.doesNotThrow(() =>
+    validateArgs(parseArgs([
+      '--video-urls', 'https://www.youtube.com/watch?v=AAA,https://www.youtube.com/watch?v=BBB',
+      '--max-results', '2',
+      '--oldest-post-date', '2026-01-01',
+    ]))
+  );
+});
+
 test('validateArgs rejects a zero, negative, or non-numeric --max-results', () => {
   for (const bad of ['0', '-1', 'abc']) {
     const args = parseArgs(['--channel-url', 'u', '--max-results', bad, '--oldest-post-date', '2026-01-01']);
@@ -179,6 +251,49 @@ test('parseDotEnv ignores comments, blank lines, and lowercase keys', () => {
 
 test('parseDotEnv reads an empty value as an empty string', () => {
   assert.deepEqual(parseDotEnv('APIFY_TOKEN='), { APIFY_TOKEN: '' });
+});
+
+// --- structured summary (reconciliation for the maintenance orchestrator) ---
+//
+// A caller that named exact videos (e.g. business-sweep.js's bounded harvest)
+// must be able to tell "asked for" apart from "actually landed" without
+// parsing console text — see maintenance/business-sweep.js.
+
+test('emptySummary starts every videoId list empty', () => {
+  assert.deepEqual(emptySummary(), {
+    created: 0,
+    updated: 0,
+    wouldCreate: 0,
+    wouldUpdate: 0,
+    skipped: 0,
+    channelsCreated: 0,
+    errors: 0,
+    returnedVideoIds: [],
+    processedVideoIds: [],
+    skippedVideoIds: [],
+  });
+});
+
+test('mergeSummary concatenates videoId lists instead of adding them as numbers', () => {
+  const total = emptySummary();
+  mergeSummary(total, {
+    ...emptySummary(),
+    created: 2,
+    returnedVideoIds: ['AAA', 'BBB'],
+    processedVideoIds: ['AAA'],
+    skippedVideoIds: ['BBB'],
+  });
+  mergeSummary(total, {
+    ...emptySummary(),
+    created: 1,
+    returnedVideoIds: ['CCC'],
+    processedVideoIds: ['CCC'],
+    skippedVideoIds: [],
+  });
+  assert.equal(total.created, 3);
+  assert.deepEqual(total.returnedVideoIds, ['AAA', 'BBB', 'CCC']);
+  assert.deepEqual(total.processedVideoIds, ['AAA', 'CCC']);
+  assert.deepEqual(total.skippedVideoIds, ['BBB']);
 });
 
 test('elideTranscripts summarises long values but keeps short ones intact', () => {

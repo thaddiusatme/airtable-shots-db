@@ -9,11 +9,11 @@ step.
 
 ```bash
 npm run setup   # once per clone — installs chrome-extension's only dep, jsdom
-npm run check   # both suites: chrome-extension, then normalizer
+npm run check   # all suites: chrome-extension, normalizer, then playlist-drain
 ```
 
-`check` runs tests only, so it is fast to re-run inside a red/green loop. It fails fast: if the
-extension suite goes red, the normalizer suite does not run. That is deliberate — one clear red.
+`check` runs tests only, so it is fast to re-run inside a red/green loop. It fails fast: if an
+earlier suite goes red, later suites do not run. That is deliberate — one clear red.
 
 For a tight loop on one file, `node --test <path>` is fine; `npm run check` is what counts as
 regression evidence.

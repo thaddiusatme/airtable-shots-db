@@ -7,7 +7,7 @@ project, `~/claude/Youtube Transcripts`) can turn them into teardowns, digests a
 
 This repo owns **capture only**. Triage, treatment, and everything downstream lives in the refinery.
 
-## Current state — 2026-07-30
+## Current state — 2026-08-04
 
 **The pivot from browser automation to a hosted scraper is complete.** Five months of work proved
 that the transcript can be *extracted* reliably but not *delivered* reliably without a human
@@ -23,7 +23,8 @@ left in this repo is mostly *not* "capture more," it's making what's captured ea
 |------|--------|
 | Apify `streamers/youtube-scraper` (`h7sDV53CddomktSi5`) | **Primary — working end to end**, verified live 2026-07-29, extended to metrics + batch sweeps 2026-07-30, merged to `master` via PR #69 |
 | Chrome extension (`chrome-extension/`) | **Frozen fallback** — works, no further investment |
-| YouTube Data API v3 | Permanently closed — ownership dealbreaker |
+| YouTube Data API v3 transcripts | Permanently closed — caption ownership dealbreaker |
+| YouTube Data API v3 playlists (`playlist-drain/`) | **Live — business-owned migration + transcript-verified drain, verified 2026-08-04** |
 | Direct HTTP / `timedtext` from our own IP | Permanently closed — 429 `IpBlocked` |
 
 **Why a paid scraper and not a fix.** `IP_BLOCKING_ROOT_CAUSE_ANALYSIS.md` established back in the
@@ -36,6 +37,56 @@ GUI automation) and B (direct HTTP) are closed.
 **The extension stays loaded and working.** It's the right tool for "this one video, right now, no
 cost." It is not the right tool for unattended volume, and it should not be developed further.
 
+## Active work — business-owned intake playlists `[working; proven live 2026-08-04]`
+
+The six personal playlists were copied once into unlisted playlists owned by **The AI Humble
+Servant** (`UCQa5rETk8YLryqNlJzWJ2PA`). Their source and destination IDs live in
+`playlist-drain/playlists.json`; destination URLs and ordered source hashes are recorded in
+`docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md`.
+
+**The migration is complete and is not a routine command.** Do not rerun `npm run migrate` after
+draining: the business playlists intentionally stop matching the original personal playlists as
+captured entries are removed. The personal playlists are preservation/reference copies now — never
+delete from, reorder, rename, or use them as the live processing queue.
+
+Routine operation is:
+
+1. Save new intake videos into the matching **business-owned** playlist. If YouTube shows the
+   personal playlists instead, switch to the business channel before saving.
+2. Harvest the videos that landed there. **`--playlist-url` does not work here** — confirmed live
+   2026-08-06, the Apify actor returns `NO_VIDEOS` for every business playlist because they are
+   `unlisted` by design, and the actor cannot read unlisted playlists (a plain unauthenticated fetch
+   of the same URL works fine; the actor's own scrape path is what fails). Use **`--video-urls`**
+   instead — list the specific video watch URLs that were just added (from the sort report or by
+   reading the playlist page) and feed them directly:
+
+   ```bash
+   cd normalizer && node apify-harvest.js \
+     --video-urls "https://www.youtube.com/watch?v=ID1,https://www.youtube.com/watch?v=ID2,..." \
+     --max-results <n, equal to the URL count — a lower value silently drops one> \
+     --oldest-post-date <generous date>
+   ```
+
+   This is not a workaround bolted on top — per-video `startUrls` is the actor's **original,
+   most-verified** input shape (2026-07-29 probe), more so than channel or playlist mode.
+3. Verify the Airtable write by `Video ID`; never trust only the command summary.
+4. Preview the drain, review the counts, then apply it:
+
+   ```bash
+   npm run drain --prefix playlist-drain
+   npm run drain --prefix playlist-drain -- --apply
+   ```
+
+Drain eligibility is **capture completion**, not triage completion: exactly one Airtable Videos row
+must match `Video ID`, and `Transcript (Full)` must be nonblank or `Transcript (Timestamped)` must be
+a nonempty valid JSON array. `Triage Status` is irrelevant. Missing transcripts and duplicate
+Airtable matches stay in the playlist. Deletion always uses the business playlist-item ID, treats a
+later 404 as already removed, and verifies the item is absent afterward.
+
+Both commands default to read-only. There is deliberately no scheduler; `--apply` is always an
+explicit human invocation. The personal OAuth credential is read-only, the business credential is
+write-enabled, and every mutation rechecks the expected business channel before acting.
+
 ## Active work — Apify → Airtable normalizer `[working; proven live 2026-07-30]`
 
 Run it, one channel:
@@ -45,10 +96,17 @@ cd normalizer && node apify-harvest.js --channel-url <url> --max-results <n> \
   --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
 ```
 
-Or one playlist (added 2026-07-30, see below):
+Or one playlist (added 2026-07-30 — **only works for public playlists**, see below):
 
 ```
 cd normalizer && node apify-harvest.js --playlist-url <url> --max-results <n> \
+  --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
+```
+
+Or specific videos (added 2026-08-06 — the working path for the *unlisted* business playlists):
+
+```
+cd normalizer && node apify-harvest.js --video-urls <url1,url2,...> --max-results <n, ≥ url count> \
   --oldest-post-date <YYYY-MM-DD> [--dry-run] [--save-raw <path>]
 ```
 
@@ -58,24 +116,42 @@ Or sweep every Channel with `Harvest?` ticked, using its `Source URL`:
 cd normalizer && node apify-harvest.js --from-airtable --max-results <n> --oldest-post-date "30 days"
 ```
 
-`--max-results` and `--oldest-post-date` are mandatory by design **in all three modes** — batch
+`--max-results` and `--oldest-post-date` are mandatory by design **in all four modes** — batch
 multiplies the cost by the channel count, so it needs more bounding, not less. `--channel-url`,
-`--playlist-url`, and `--from-airtable` are mutually exclusive channel-selection inputs. Details and
-the live verification tables: `docs/NORMALIZER-MANIFEST.md`.
+`--playlist-url`, `--video-urls`, and `--from-airtable` are mutually exclusive channel-selection
+inputs. Details and the live verification tables: `docs/NORMALIZER-MANIFEST.md`.
 
-**`--playlist-url` reconnects a leg that broke in the 2026-07-29 pivot.** `watch-later-sort` (the
-`~/claude/Youtube Transcripts` project) routes videos into `AI (Claude)` / `AI` /
-`Business & Productivity` on the assumption that a playlist harvester picks them up — but that
-harvester was the Chrome-extension per-video panel, retired the same day this normalizer went live,
-and the normalizer that replaced it only took `--channel-url`/`--from-airtable`. Sorting a video into
-one of those three playlists did nothing for capture between 2026-07-29 and 2026-07-30. `--playlist-url`
-closes that gap: the Apify actor's `startUrls` accepts a playlist link exactly like a channel link
-(confirmed against the published input schema), and `transform.js` already derives each video's
-Channel from the dataset item's own `channelUsername`/`channelUrl` rather than from the input URL —
-so a playlist spanning several channels upserts each one correctly with no changes to the rest of the
-pipeline. Not yet wired into `--from-airtable` batch mode (playlists aren't Channels-table rows); for
-now it's a manual one-off, same as `--channel-url`. **LIVE — not applicable**: unit-tested only, not
-yet run against a real playlist. Full detail in `docs/NORMALIZER-MANIFEST.md`.
+**`--playlist-url` reconnects a leg that broke in the 2026-07-29 pivot, but only for *public*
+playlists.** `watch-later-sort` routes videos into the six business playlists on the assumption that
+a playlist harvester picks them up — but that harvester was the Chrome-extension per-video panel,
+retired the same day this normalizer went live, and the normalizer that replaced it only took
+`--channel-url`/`--from-airtable`. `--playlist-url` was meant to close that gap: the Apify actor's
+`startUrls` accepts a playlist link exactly like a channel link (confirmed against the published
+input schema), and `transform.js` already derives each video's Channel from the dataset item's own
+`channelUsername`/`channelUrl` rather than from the input URL. **LIVE — run 2026-08-06: it does not
+work against our actual business playlists.** The Apify actor cannot read `unlisted` playlists —
+`NO_VIDEOS` against two real business playlists, reproduced twice, while the identical call against
+a known-public playlist worked. All six business intake playlists are unlisted by design
+(`docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md`), so this mode currently cannot serve the queue it was
+built for. Full writeup: `docs/NORMALIZER-MANIFEST.md`.
+
+**`--video-urls` is the mode that actually closes the gap (added 2026-08-06).** Same "third
+channel-selection input, not a new data path" shape as playlist mode, but passes N individual video
+watch URLs as N `startUrls` entries in one actor call — and per `lib/apify-client.js`'s header
+comment, a single-video `startUrls` run is the actor's **original, most-verified** input shape
+(2026-07-29 probe), more so than channel or playlist mode ever was. `--max-results` must be ≥ the
+number of URLs given — unlike the cost-guardrail role it plays elsewhere, here a too-low value would
+silently drop one of the exact videos named. **LIVE verified 2026-08-06**: 15 videos captured with
+zero errors (Airtable Videos records `rec22vOqgMWtR1k7h`, `rec3nUNboQzHfsbtX`, `rec7TUh9aSx6ryrUy`,
+`recAAHK8oDkfDCOnr`, `recDxeXxFPN5lRK3Z`, `recEU7MjVwK0m0ELH`, `recTN47moIsaVNHio`,
+`recVTZcWmPWF8a0HF`, `recYUJ637sS1kj4S9`, `reccuv1D41UBgBYFd`, `reckoIcn38uhsp5I9`,
+`rectDqcobiYLWdgji`, `recvjGbLx5nPoEJlW`, `recvtYPblV8WGGlqE`, `recxite5fOnskUHiH` — each confirmed
+by querying `Video ID`, with a nonempty transcript, exactly one Channel link, `Triage Status =
+Queued`). 8 new Channels created (`GaryVee`, `Mike Tholfsen`, `BIM Design Studio`,
+`Using Generative AI`, `OpenAI`, `iWorkstation`, `Alex Finn`, `Dawood Khan | Akceleration`), each
+confirmed `@handle`-keyed with no fork and blank `Track` left for a human to set — do not guess it.
+Not yet wired into `--from-airtable` (same reason as playlist mode: these aren't Channels-table
+rows). Full writeup: `docs/NORMALIZER-MANIFEST.md`.
 
 ```
 Airtable Channels (Harvest? · Source URL · Last harvested · Track)
@@ -230,6 +306,11 @@ normalizer/                # the primary path — Apify -> Airtable, Node, no de
 ├── lib/srt-parser.js      #   subtitles -> {text, start}
 ├── lib/transform.js       #   dataset item -> {createOnlyFields, updateFields, channel}
 └── lib/airtable-client.js #   upsert by Video ID, find-or-create Channel, listAll* for audit.js
+playlist-drain/            # personal -> business playlists + Airtable-verified drain
+├── migrate-playlists.js   #   resumable ordered copy; dry-run unless --apply
+├── drain-playlists.js     #   removes only transcript-verified business playlist items
+├── get-refresh-token.js   #   separate business-write / personal-read OAuth targets
+└── playlists.json         #   six source IDs + persisted business destination IDs
 docs/TDD-CONTRACT.md       # the one command + the four evidence lines — READ THIS FIRST
 docs/NORMALIZER-MANIFEST.md# normalizer design + live verification tables
 docs/archive/              # FINDINGS-youtube-automation.md — five months of hard-won facts
@@ -237,13 +318,17 @@ docs/archive/              # FINDINGS-youtube-automation.md — five months of h
 .claude/skills/            # apify-harvest, diagnose-stuck-automation
 ```
 
+Playlist migration and the first transcript-verified drain completed live
+2026-08-04. Destination IDs, ordered source hashes, source-preservation checks,
+and post-drain counts are in `docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md`.
+
 ## How work gets done here
 
 One command, from the repo root:
 
 ```bash
 npm run setup   # once per clone
-npm run check   # both suites — chrome-extension, then normalizer
+npm run check   # all suites — chrome-extension, normalizer, then playlist-drain
 ```
 
 Every change reports four lines of evidence — **RED**, **GREEN**, **REGRESSION**, **LIVE** (or an
@@ -264,14 +349,30 @@ with no credentials — so it verifies the first three and never the fourth.
   lack of a `choices` param blocks a write invariant #7 fix. Uses the record-detail modal, not the
   grid, since the grid's canvas rendering is unreliable for precise clicks in an unsupported-browser
   session.
+- **`youtube-playlist-ui-technique`** — low-level clicking mechanics for YouTube's video-page "Save
+  to..." panel and a Watch Later row's action menu: Save button position, why Escape reverts a
+  checkbox instead of just closing the panel, why `find`'s "Selected" state can't be trusted (verify
+  via a `zoom` screenshot of the bookmark icon instead), and why the Watch Later action menu often
+  needs two clicks. Companion to the (plugin-provided) `watch-later-sort` skill, which owns
+  classification/routing, not the mechanics of driving the UI. Learned live 2026-08-05 sorting 21
+  Watch Later videos into three business playlists.
+- **`harvest-after-sort`** — part 2 of the Watch Later pipeline: runs the normalizer's
+  `--video-urls` mode against whichever videos a `watch-later-sort` run just moved into business
+  playlists, verifies the Airtable writes by `Video ID`, and reports. Uses `--video-urls`, not
+  `--playlist-url` — the latter can't read the business playlists (`unlisted`, confirmed live
+  2026-08-06, see `docs/NORMALIZER-MANIFEST.md`). Stops before `playlist-drain` — that stays a
+  separate, human-gated step.
 - Retired 2026-07-29 along with the browser-automation line: `harvest-playlist`, `verify-panel`,
   `youtube-panel-triage`. `apify-harvest` replaces them.
 
 ## Environment
 
-Credentials in `.env` (not committed): `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`. The normalizer will
-also need `APIFY_TOKEN`. The extension reads credentials from `chrome.storage.sync`, entered via its
-Settings page.
+Credentials in `.env` (not committed): `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `APIFY_TOKEN`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (business write), and
+`GOOGLE_PERSONAL_READ_REFRESH_TOKEN` (personal read-only). Optional `GOOGLE_PERSONAL_CLIENT_ID` and
+`GOOGLE_PERSONAL_CLIENT_SECRET` isolate the personal grant when the shared OAuth client is pinned to
+the business channel. The extension reads Airtable credentials
+from `chrome.storage.sync`, entered via its Settings page.
 
 No build step. Vanilla JS. Load unpacked at `chrome://extensions/`.
 

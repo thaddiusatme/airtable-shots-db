@@ -28,13 +28,29 @@ Every channel with `Harvest?` ticked in Airtable (uses each row's `Source URL`):
 cd normalizer && node apify-harvest.js --from-airtable --max-results 5 --oldest-post-date "30 days"
 ```
 
+Specific videos, not a whole channel (e.g. for `harvest-after-sort`, or any time a playlist is
+`unlisted` — see below):
+
+```bash
+cd normalizer && node apify-harvest.js \
+  --video-urls "https://www.youtube.com/watch?v=ID1,https://www.youtube.com/watch?v=ID2" \
+  --max-results 2 --oldest-post-date 2026-01-01 --dry-run
+```
+
 Drop `--dry-run` only after the printed payload looks right. `--save-raw <path>` dumps the raw
 dataset — use it whenever the output shape matters (in batch mode it writes one file per channel).
 
-`--max-results` and `--oldest-post-date` are **mandatory by design** in both modes, dry-run or not.
+`--max-results` and `--oldest-post-date` are **mandatory by design** in every mode, dry-run or not.
 Do not add a bypass, and be especially wary of loosening them for `--from-airtable` — batch
 multiplies the cost by the number of ticked channels. `oldestPostDate` is verified honored
-(negative control 2026-07-29) and accepts relative values like `"7 days"`.
+(negative control 2026-07-29) and accepts relative values like `"7 days"`. For `--video-urls`,
+`--max-results` must be **at least** the number of URLs given — the CLI refuses a lower value, since
+here it would silently drop one of the exact videos named rather than just bound cost.
+
+**There is also `--playlist-url`, but it cannot read `unlisted` playlists** — confirmed live
+2026-08-06, `NO_VIDEOS` against real unlisted playlists while an identical call against a public
+playlist worked. If the playlist isn't public, use `--video-urls` with the individual video URLs
+instead. Full writeup: `docs/NORMALIZER-MANIFEST.md`.
 
 **To add a channel to the sweep, tick `Harvest?` and set `Source URL` in Airtable — never edit a
 list in the repo.** That is the whole point of the config living in the base.

@@ -1,0 +1,10 @@
+{
+  "name": "maintenance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lane A — business-playlist maintenance orchestrator (inventory -> bounded harvest -> reconcile -> gated drain). See ../CLAUDE.md and ~/.claude/plans/zany-roaming-sifakis.md for the design rationale.",
+  "scripts": {
+    "test": "node --test",
+    "sweep": "node business-sweep.js"
+  }
+}

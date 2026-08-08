@@ -257,10 +257,79 @@ tier as `--channel-url`. If the cadence turns out to want it automated, the natu
 separate "Harvest playlists" config surface (a new small table, or an `Intake Source = Watch Later`
 convention read from somewhere), not folding playlists into the Channels table.
 
-**LIVE — not applicable.** Playlist mode is unit-tested (`validateArgs`'s three-way mutual exclusion,
-`resolveChannels()` with `recordId: null`, and the reasoning that `transform.js` derives Channel per
-dataset item) but has not been run against a live playlist. No Apify run ID or Airtable record ID
-exists to cite for it. Run it live before claiming otherwise.
+**LIVE — run 2026-08-06, and the result changes the picture.** `--playlist-url` was probed live for
+the first time against the three business playlists a same-day `watch-later-sort` run had just
+populated. Result: **the Apify `streamers/youtube-scraper` actor cannot read unlisted YouTube
+playlists.** Both `AI (Claude)` (`PLTJ-2ZXfYpxM`, 47 videos) and `Business & Productivity`
+(`PLFN18u6eRm4s`, 6 videos) returned a dataset of exactly one item — `{"error":"NO_VIDEOS","note":"No
+videos found on the page."}` — reproduced twice on the smaller playlist to rule out a transient
+failure. This is **not** an unlisted-vs-private-content permissions gate on YouTube's side: a plain
+unauthenticated `curl` of the same URL returns HTTP 200 with the playlist's real `videoId`s embedded
+in the page. The actor's own scraping path — not a basic page fetch — is what fails to find them.
+
+**Control test, same session:** the identical CLI path (`--playlist-url`, `--dry-run`,
+`--save-raw`) against a known-**public** playlist (`PLrAXtmErZgOcl7mvyfkQTHFnOGZxWtN55`, a Lex Fridman
+channel playlist) worked exactly as designed — 2 items back, both would-create with a full transcript
+and metrics. So the actor's playlist support itself is fine; **unlisted specifically is what it can't
+see.**
+
+This directly invalidates the premise this whole section was built on ("the actor's `startUrls` field
+accepts a playlist URL... exactly like a channel URL," confirmed only against the *published schema*,
+never against a live unlisted playlist). All six business intake playlists were deliberately created
+`unlisted` (`docs/PLAYLIST-MIGRATION-LIVE-2026-08-04.md`), so **`--playlist-url` cannot currently
+capture anything from the actual intake queue it exists to serve.** Do not re-attempt this exact call
+against another business playlist expecting a different result — the failure is reproducible and the
+cause is now understood (actor-side, unlisted-specific), not a fluke worth re-running.
+
+Not yet investigated: whether the actor supports an authenticated/cookie-based input for private or
+unlisted content (check the published input schema for a cookies/session field before assuming no).
+
+**Flipping the playlist to `public` was tried and did not resolve it, at least not within minutes.**
+The `Business & Productivity` playlist was switched to `public` mid-session (confirmed via the
+playlist page itself: "Playlist • Public • 6 videos"), and an identical `--playlist-url` retry
+immediately after still returned `NO_VIDEOS`. This doesn't rule out propagation delay to whatever
+backend the actor reads from as the eventual cause — it just means it hadn't propagated within the
+short window tested. Nobody has since retried after a longer wait, because `--video-urls` (below)
+made it moot for that session. If revisiting this, retry `--playlist-url` against a
+since-public-for-a-while playlist before concluding propagation delay was ruled out.
+
+## 2026-08-06 — `--video-urls` mode
+
+Added the same session as the `--playlist-url` blocker above, specifically to route around it. Same
+"third channel-selection input, not a new data path" shape: `resolveChannels()` grows a fourth
+branch, returning `{ recordId: null, channelName: 'videos: N url(s)', sourceUrls: [...] }` instead of
+the single `sourceUrl` every other mode uses. `sweepChannel()` now builds `startUrls` from
+`channel.sourceUrls.map(url => ({ url }))` when present, falling back to the single-URL form
+otherwise — one actor call, N `startUrls` entries, one dataset item per video.
+
+**This is not a lesser workaround than playlist mode — if anything the reverse.** `lib/apify-client.js`'s
+header comment has said since 2026-07-29: "Actor input field names below are ONLY VERIFIED for a
+single-video `startUrls` run." Individual video URLs were the actor's original, most-probed shape;
+channel and playlist mode were both built and trusted on top of that same field-name assumption
+without a comparably direct live check until each was actually run.
+
+`--max-results` keeps its mandatory-guardrail role, but the failure mode it guards against inverts
+for this mode: everywhere else a too-low value just bounds cost; here it would silently drop one of
+the exact videos the caller named. `validateArgs` refuses `--video-urls` combined with
+`--max-results` below the URL count rather than truncating quietly.
+
+**LIVE verified 2026-08-06.** A 2-video dry-run canary (`CAQ2pfhoPcs`, `vbRKlqNJP98`) confirmed the
+payload shape first. The real run — 15 videos spanning `AI (Claude)`, `Content Creation`, and
+`Business & Productivity`, the exact set a `watch-later-sort` run had just moved — completed with
+`{"created":15,"updated":0,"skipped":0,"channelsCreated":8,"errors":0}`. Every record verified by
+querying `Video ID` directly (not the run summary): 15 distinct Videos rows (`rec22vOqgMWtR1k7h`,
+`rec3nUNboQzHfsbtX`, `rec7TUh9aSx6ryrUy`, `recAAHK8oDkfDCOnr`, `recDxeXxFPN5lRK3Z`,
+`recEU7MjVwK0m0ELH`, `recTN47moIsaVNHio`, `recVTZcWmPWF8a0HF`, `recYUJ637sS1kj4S9`,
+`reccuv1D41UBgBYFd`, `reckoIcn38uhsp5I9`, `rectDqcobiYLWdgji`, `recvjGbLx5nPoEJlW`,
+`recvtYPblV8WGGlqE`, `recxite5fOnskUHiH`), each with a nonempty `Transcript (Full)` /
+`Transcript (Timestamped)` (ranging 2,066–33,781 chars for the full transcript), `Triage Status =
+Queued`, `Intake Source = Sweep`, and exactly one linked Channel. The 8 newly created Channels
+(`GaryVee`, `Mike Tholfsen`, `BIM Design Studio`, `Using Generative AI`, `OpenAI`, `iWorkstation`,
+`Alex Finn`, `Dawood Khan | Akceleration`) were separately queried and confirmed `@handle`-keyed
+(never `UC...`) with no fork and blank `Track`, as designed — a human still has to set it.
+
+**Not yet wired into `--from-airtable`** — same reason as playlist mode: the videos named aren't tied
+to a Channels-table row, so batch mode has nothing to key off. Remains a manual, one-off invocation.
 
 ## Next step, in order
 

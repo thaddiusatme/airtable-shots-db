@@ -143,6 +143,13 @@ function parseArgs(argv) {
   return args;
 }
 
+// Track stopped gating the working view 2026-08-06 (see CLAUDE.md — every
+// Queued video reaches triage regardless of Track now). A blank Track just
+// means the descriptive field is unset, not that the row is hidden.
+function blankTrackWarning(channelName, channelKey) {
+  return `[channel] created "${channelName}" (${channelKey}) with NO Track set — Track is metadata only and no longer gates triage, but audit.js will keep flagging it; set it by hand when convenient.`;
+}
+
 // Replace long transcript bodies with a size summary so dry-run output stays
 // readable while still proving the fields are populated.
 function elideTranscripts(fields) {
@@ -295,7 +302,7 @@ async function sweepChannel({ apifyToken, airtableKey, baseId, channel, args, ca
 
         if (channelResult.created) {
           summary.channelsCreated++;
-          console.warn(`[channel] created "${built.channel.channelName}" (${channelKey}) with NO Track set — it will silently vanish from the working view (Track = AIHS OR Tooling-watch) until someone sets Track by hand.`);
+          console.warn(blankTrackWarning(built.channel.channelName, channelKey));
         } else if (channelResult.matchedOn) {
           const stats = channelResult.statsUpdated ? ', stats refreshed' : '';
           console.log(`[channel] matched existing "${built.channel.channelName}" on ${channelResult.matchedOn}${stats}`);
@@ -487,5 +494,6 @@ module.exports = {
   emptySummary,
   mergeSummary,
   sweepChannel,
+  blankTrackWarning,
   USAGE,
 };

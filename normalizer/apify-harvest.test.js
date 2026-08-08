@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseArgs, parseDotEnv, validateArgs, elideTranscripts, emptySummary, mergeSummary } = require('./apify-harvest');
+const { parseArgs, parseDotEnv, validateArgs, elideTranscripts, emptySummary, mergeSummary, blankTrackWarning } = require('./apify-harvest');
 
 const REQUIRED = ['--channel-url', 'https://www.youtube.com/@X', '--max-results', '2', '--oldest-post-date', '2026-01-01'];
 
@@ -305,4 +305,16 @@ test('elideTranscripts summarises long values but keeps short ones intact', () =
   assert.equal(out['Video Title'], 'Short title');
   assert.equal(out['Transcript (Full)'], '<5000 chars>');
   assert.deepEqual(out['Thumbnail (Image)'], [{ url: 'https://example.com/a.jpg' }]);
+});
+
+// CLAUDE.md: Track stopped gating the working view 2026-08-06 — every Queued
+// video reaches triage regardless of Track now. The warning used to claim
+// otherwise (a live 2026-08-06 run still logged the pre-cutover "silently
+// vanish... Track = AIHS OR Tooling-watch" text), which is simply false today.
+test('blankTrackWarning does not claim Track still gates the working view', () => {
+  const warning = blankTrackWarning('Ali Abdaal', '@aliabdaal');
+  assert.match(warning, /Ali Abdaal/);
+  assert.match(warning, /@aliabdaal/);
+  assert.doesNotMatch(warning, /silently vanish/);
+  assert.doesNotMatch(warning, /Track = AIHS OR Tooling-watch/);
 });

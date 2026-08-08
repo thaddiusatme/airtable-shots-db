@@ -7,6 +7,7 @@ const {
   findVideosWithNoChannel,
   findDuplicateVideoIds,
   findVideosMissingMetrics,
+  CHECKS,
 } = require('./audit');
 
 test('findBlankTrackChannels reports only channels with no Track', () => {
@@ -19,6 +20,15 @@ test('findBlankTrackChannels reports only channels with no Track', () => {
   assert.equal(findings.length, 2);
   assert.match(findings[0], /@B/);
   assert.match(findings[1], /@C/);
+});
+
+// CLAUDE.md: Track stopped gating the working view 2026-08-06. The hint text
+// used to claim a blank Track hides a channel's videos from triage — that
+// claim is stale now that every Queued video reaches triage regardless.
+test('Blank Track Channels hint does not claim Track still gates the working view', () => {
+  const check = CHECKS.find((c) => c.label === 'Blank Track Channels');
+  assert.doesNotMatch(check.hint, /silently vanish/);
+  assert.doesNotMatch(check.hint, /Track = AIHS OR Tooling-watch/);
 });
 
 test('findMisconfiguredHarvestChannels reports Harvest? ticked with no Source URL', () => {

@@ -75,7 +75,7 @@ function findVideosMissingMetrics(videos) {
 const CHECKS = [
   {
     label: 'Blank Track Channels',
-    hint: 'silently vanish from the working view (Track = AIHS OR Tooling-watch)',
+    hint: 'no longer gates the working view (dropped 2026-08-06) — just incomplete metadata, set by hand',
     run: (data) => findBlankTrackChannels(data.channels),
   },
   {
@@ -154,4 +154,5 @@ module.exports = {
   findVideosWithNoChannel,
   findDuplicateVideoIds,
   findVideosMissingMetrics,
+  CHECKS,
 };

@@ -11,6 +11,7 @@
 // that cannot be made unattended the same way. Every design decision below
 // traces back to a specific stakeholder-review finding, noted inline.
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 const { acquireLock, heartbeat, releaseLock } = require('./lock');
@@ -93,6 +94,18 @@ function oldestSavedFirst(videoIds, byVideoId) {
     .map((videoId, index) => ({ videoId, index, at: earliest(videoId) }))
     .sort((a, b) => (a.at === b.at ? a.index - b.index : a.at < b.at ? -1 : 1))
     .map((entry) => entry.videoId);
+}
+
+function assertHarvestMatches(needsHarvest, expectHarvest) {
+  const expected = new Set(expectHarvest);
+  const actual = new Set(needsHarvest);
+  const unexpected = needsHarvest.filter((videoId) => !expected.has(videoId));
+  const missing = expectHarvest.filter((videoId) => !actual.has(videoId));
+  if (unexpected.length === 0 && missing.length === 0) return;
+  const parts = [];
+  if (unexpected.length) parts.push(`${unexpected.length} need harvest but were not expected (${unexpected.join(', ')})`);
+  if (missing.length) parts.push(`${missing.length} expected but no longer need harvest (${missing.join(', ')})`);
+  throw new Error(`the harvest list changed since it was approved: ${parts.join('; ')} — nothing harvested, nothing deleted. Preview again and get a new approval.`);
 }
 
 // Classify each unique videoId: already capture-complete (drain-eligible) vs
@@ -234,6 +247,7 @@ async function runBusinessSweep({
   sweepChannelFn = sweepChannel,
   drainPlaylistsFn = drainPlaylists,
   listPlaylistItemsFn = listPlaylistItems,
+  expectHarvest,
 }) {
   acquireLock(lockPath, { now: now() });
   try {
@@ -251,6 +265,13 @@ async function runBusinessSweep({
 
     const classification = await classifyVideos({ uniqueVideoIds: inventory.uniqueVideoIds, findVideo });
     classification.needsHarvest = oldestSavedFirst(classification.needsHarvest, inventory.byVideoId);
+
+    // An approval names an exact list of videos. Between the preview that
+    // was approved and this run the playlists can change (two videos were
+    // added mid-run on 2026-10-05), and --apply re-reads them. So when the
+    // caller says what it was approved to harvest, anything else is refused
+    // here — before the first paid call and before any delete.
+    if (apply && expectHarvest !== undefined) assertHarvestMatches(classification.needsHarvest, expectHarvest);
 
     let harvest = { batches: [], remaining: classification.needsHarvest, stoppedReason: 'apply=false — harvest is a preview only', totalRequested: 0 };
     if (apply) {
@@ -308,6 +329,8 @@ async function runBusinessSweep({
     return {
       mode: apply ? 'apply' : 'dry-run',
       inventory: { perPlaylist: inventory.perPlaylist, totalItems: inventory.totalItems, uniqueVideoIds: inventory.uniqueVideoIds.length },
+      // The exact videos, in harvest order — what an approval is written against.
+      needsHarvestVideoIds: classification.needsHarvest,
       findings: {
         duplicates: inventory.duplicates,
         unavailable: inventory.perPlaylist.reduce((sum, p) => sum + p.unavailable, 0),
@@ -348,9 +371,21 @@ function printReport(report) {
   }
 }
 
+function writeReportJson(filePath, report) {
+  fs.writeFileSync(filePath, `${JSON.stringify(report, null, 2)}\n`);
+}
+
 function printUsage() {
   console.log(`Usage: node business-sweep.js [--apply] [--max-writes N] [--queue-ceiling N]
                               [--batch-cap N] [--cost-cap N]
+                              [--json <path>] [--expect-harvest <videoIds>]
+
+--json <path> also writes the report as JSON, including the exact video IDs
+that need harvest (needsHarvestVideoIds), in harvest order.
+
+--expect-harvest <id,id,...> (with --apply) refuses to harvest or delete
+anything unless the videos needing harvest are exactly this set. Pass the list
+that was approved; "" means "expect nothing to harvest".
 
 Default mode is read-only: inventories the six business playlists, reports
 duplicate/cross-playlist findings, previews the harvest backlog, and runs a
@@ -378,6 +413,12 @@ function parseArgs(argv) {
     else if (arg === '--queue-ceiling') args.queueCeiling = Number(argv[++i]);
     else if (arg === '--batch-cap') args.batchCap = Number(argv[++i]);
     else if (arg === '--cost-cap') args.costCap = Number(argv[++i]);
+    else if (arg === '--json') args.json = argv[++i];
+    else if (arg === '--expect-harvest') {
+      const value = argv[++i];
+      if (value === undefined) throw new Error('--expect-harvest needs a comma-separated list of video IDs ("" for none)');
+      args.expectHarvest = value.split(',').map((id) => id.trim()).filter(Boolean);
+    }
     else throw new Error(`Unknown argument: ${arg}`);
   }
   return args;
@@ -408,8 +449,13 @@ async function main(argv = process.argv.slice(2)) {
     perBatchCap: args.batchCap,
     costCap: args.costCap,
     maxDrainWrites: args.maxWrites,
+    expectHarvest: args.expectHarvest,
   });
   printReport(report);
+  if (args.json) {
+    writeReportJson(args.json, report);
+    console.log(`\nReport written to ${args.json}`);
+  }
 
   if (report.findings.duplicates.length > 0) {
     console.log(`\n${report.findings.duplicates.length} duplicate finding(s) need a human decision — see above. Not auto-resolved.`);
@@ -435,6 +481,8 @@ module.exports = {
   inventoryBusinessPlaylists,
   classifyVideos,
   oldestSavedFirst,
+  assertHarvestMatches,
+  writeReportJson,
   boundedHarvest,
   runBusinessSweep,
   printReport,

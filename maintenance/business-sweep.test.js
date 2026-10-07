@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { listPlaylistItems, drainPlaylists, DEFAULT_MAX_WRITES } = require('../playlist-drain/playlist-manager');
-const { runBusinessSweep, boundedHarvest, watchUrl, readLedger, parseArgs, oldestSavedFirst, inventoryBusinessPlaylists } = require('./business-sweep');
+const { runBusinessSweep, boundedHarvest, watchUrl, readLedger, parseArgs, oldestSavedFirst, inventoryBusinessPlaylists, assertHarvestMatches, writeReportJson } = require('./business-sweep');
 
 function tmpStatePaths() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'business-sweep-'));
@@ -392,4 +392,82 @@ test('the sweep harvests the oldest saved video first when headroom fits only on
   assert.deepEqual(requested, ['vid-old']);
   assert.deepEqual(result.harvest.remaining, ['vid-new']);
   assert.match(result.harvest.stoppedReason, /30\/30 untriaged/);
+});
+
+// --- binding --apply to an approved list --------------------------------------
+
+function twoVideoSweep(state, over = {}) {
+  const calls = { harvested: [], drainApplies: 0 };
+  const listPlaylistItemsFn = async () => ({
+    items: [
+      { playlistItemId: 'pi-1', videoId: 'vid-aaaa', position: 0, addedAt: '2026-10-01T00:00:00Z' },
+      { playlistItemId: 'pi-2', videoId: 'vid-bbbb', position: 1, addedAt: '2026-10-02T00:00:00Z' },
+    ],
+    unavailable: [],
+  });
+  const promise = runBusinessSweep({
+    businessYoutube: {},
+    config: { playlists: [{ name: 'One', destinationPlaylistId: 'PL-one' }] },
+    queueCeiling: 30,
+    ...state,
+    countUntriagedFn: async () => 0,
+    findVideo: async () => null,
+    listPlaylistItemsFn,
+    sweepChannelFn: async ({ channel }) => {
+      const ids = channel.sourceUrls.map((url) => url.split('v=')[1]);
+      calls.harvested.push(...ids);
+      return { returnedVideoIds: ids, processedVideoIds: [], errors: 0 };
+    },
+    drainPlaylistsFn: async ({ apply }) => { if (apply) calls.drainApplies += 1; return { eligible: 0, errors: [], unavailable: 0 }; },
+    ...over,
+  });
+  return { promise, calls };
+}
+
+test('the report names the exact videos needing harvest, in harvest order', async () => {
+  const { promise } = twoVideoSweep(tmpStatePaths(), { apply: false });
+  const report = await promise;
+  assert.deepEqual(report.needsHarvestVideoIds, ['vid-aaaa', 'vid-bbbb']);
+  assert.deepEqual(report.harvest.remaining, ['vid-aaaa', 'vid-bbbb']);
+});
+
+test('--expect-harvest: a matching list harvests; order does not matter', async () => {
+  const { promise, calls } = twoVideoSweep(tmpStatePaths(), { apply: true, expectHarvest: ['vid-bbbb', 'vid-aaaa'] });
+  await promise;
+  assert.deepEqual(calls.harvested, ['vid-aaaa', 'vid-bbbb']);
+});
+
+test('--expect-harvest: a video added after approval stops the run before any paid call or delete, and frees the lock', async () => {
+  const state = tmpStatePaths();
+  const { promise, calls } = twoVideoSweep(state, { apply: true, expectHarvest: ['vid-aaaa'] });
+  await assert.rejects(promise, /harvest list changed since it was approved: 1 need harvest but were not expected \(vid-bbbb\) — nothing harvested, nothing deleted/);
+  assert.deepEqual(calls, { harvested: [], drainApplies: 0 });
+  assert.equal(fs.existsSync(state.lockPath), false);
+});
+
+test('--expect-harvest: an approved video that no longer needs harvest also stops the run', async () => {
+  const { promise, calls } = twoVideoSweep(tmpStatePaths(), { apply: true, expectHarvest: ['vid-aaaa', 'vid-bbbb', 'vid-cccc'] });
+  await assert.rejects(promise, /1 expected but no longer need harvest \(vid-cccc\)/);
+  assert.deepEqual(calls.harvested, []);
+});
+
+test('--expect-harvest is not enforced on a preview, and "" means expect nothing', async () => {
+  const { promise } = twoVideoSweep(tmpStatePaths(), { apply: false, expectHarvest: [] });
+  await promise;
+  assert.doesNotThrow(() => assertHarvestMatches([], []));
+  assert.throws(() => assertHarvestMatches(['vid-aaaa'], []), /were not expected/);
+  assert.deepEqual(parseArgs(['--apply', '--expect-harvest', '', '--json', '/tmp/r.json']).expectHarvest, []);
+  assert.deepEqual(parseArgs(['--expect-harvest', 'a1b2c3d4e5f, g6h7i8j9k0l']).expectHarvest, ['a1b2c3d4e5f', 'g6h7i8j9k0l']);
+  assert.throws(() => parseArgs(['--expect-harvest']), /needs a comma-separated list/);
+});
+
+test('--json writes the report to disk as JSON, video ids included', async () => {
+  const state = tmpStatePaths();
+  const { promise } = twoVideoSweep(state, { apply: false });
+  const report = await promise;
+  const file = path.join(path.dirname(state.ledgerPath), 'report.json');
+  writeReportJson(file, report);
+  const read = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(read.needsHarvestVideoIds, ['vid-aaaa', 'vid-bbbb']);
+  assert.deepEqual(read.inventory.perPlaylist, [{ name: 'One', destinationPlaylistId: 'PL-one', total: 2, unavailable: 0 }]);
 });

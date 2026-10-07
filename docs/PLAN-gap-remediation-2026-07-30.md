@@ -172,31 +172,37 @@ working tree contradicts the documented strategy.
 
 ---
 
-## Phase 4 — Data hygiene `[~15 minutes, do it whenever]`
+## Phase 4 — Data hygiene ✅ completed 2026-08-09
 
 `node audit.js` reports 96 findings across 5 checks. Most are expected noise (91 videos without
 metrics is correct — only 5 channels are `Harvest?`-ticked). These are the real ones:
 
-- [ ] **Delete 2 junk records** — `null` titles, no usable Video ID. They inflate every count you
+- [x] **Delete 2 junk records** — `null` titles, no usable Video ID. Deleted live 2026-08-09;
+      the read-only audit count fell from 218 to 216 Videos.
       quote, including "106 Videos."
   - `recLhZak5ARNtgYbE` (no `Video ID` at all)
   - `recRlmmrTXdGxFNTb` (`6KktB5aNrjE`)
-- [ ] **Relink 2 orphaned Videos** — no Channel link, so `Channel-Track` and Track routing cannot
+- [x] **Relink 2 orphaned Videos** — both now have Channel links; verified by the 2026-08-09 audit.
       reach them.
   - `rec9MZ719IUZEzpk6` — `I4kGV5sJEdA`, *"5 AI Skills You MUST HAVE…"*
   - `recCvByut8eCmt0Mu` — `ib74sLgjIBM`, *"Build A Claude Knowledge Base That Self-Improves!"*
         → needs a `@SystemsMadeBetter` Channel row, which **does not exist yet**
-- [ ] **Set `Track` on 4 blank-Track Channels** — currently invisible to the refinery's working view
-      (`Track = AIHS OR Tooling-watch`):
+- [x] **Superseded: Track no longer gates the refinery working view.** The filter was removed
+      2026-08-06, so blank Track is incomplete metadata rather than an invisible-video defect.
+      The original four remain blank (and the live total is now 39); no routing repair is required:
   - `recD5pSBc1BqS8Z7H` `@Jasper_Tech` · `recQnZaAM4mib0G6R` `@BulbDigital`
   - `recXg3mhsLCOZV5Oz` `@3.7Million` · `recnAKxULmdRgb2Jz` `@WizardsandWarriors`
-- [ ] **Decide on 2 parked duplicates** still occupying rows — keep as tombstones or delete:
+- [x] **Keep the 2 parked duplicates as tombstones.** Their mangled IDs cannot collide with a real
+      upsert, and the audit reports no duplicate `Video ID` values:
   - `reca4ffDtP8QDoFqt` (`oTphk2SVHNc-DUP`) · `recRYJ0UzWJ3YBrzk` (`V22VtQ916Y0-DUP-declined`)
 
 **Do not use the API to add select choices** — it cannot, and a bad value 422s the whole record
 (write invariant 7). `Track` values must already exist; set them in the UI.
 
-**Acceptance:** `node audit.js` blank-Track and orphan sections both read `[ok]`.
+**Acceptance (updated for the 2026-08-06 view change):** `node normalizer/audit.js` reports
+`[ok] Videos with no Channel link` and `[ok] Duplicate Video ID values`; blank Track remains an
+informational metadata warning. Verified live 2026-08-09: 137 Channels, 216 Videos, zero orphans,
+zero duplicate Video IDs, and zero Harvest-without-Source-URL rows.
 
 ---
 

@@ -186,20 +186,24 @@ refinery's real bottleneck is a human review gate). All shipped except the last:
 - ✅ `Intake Source` on Videos — hand-curated (`Watch Later`) vs swept (`Sweep`), so triage can be
   stricter on sweeps. Everything triaged before 2026-07-30 was hand-picked; that's no longer true.
 - ✅ Queue-depth ceiling, **re-checked before each channel** in batch mode.
-- ✅ A blank-`Track` guard. Bulk ingest creates Channels with blank `Track`, and the refinery's
-  working view filters `Track = AIHS OR Tooling-watch` — so blank-Track videos vanish *silently*
-  rather than failing loudly. Shipped as a repo-side audit command, `normalizer/audit.js`, rather
+- ✅ A blank-`Track` audit. Bulk ingest may create Channels with blank `Track`; Track stopped gating
+  the refinery working view on 2026-08-06, so this is incomplete metadata rather than a hidden-video
+  defect. Kept as a repo-side audit command, `normalizer/audit.js`, rather
   than a manual Airtable view (the Airtable MCP has no create-view tool, so a view would need
   manual UI upkeep with nothing to catch drift). Run `cd normalizer && node audit.js` — it also
   checks for `Harvest?`-ticked channels with no `Source URL`, Videos with no Channel link,
-  duplicate `Video ID`s, and Videos missing `Metrics Captured At`. **4 of 88 Channels** are
-  currently blank-`Track` (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`).
+  duplicate `Video ID`s, and Videos missing `Metrics Captured At`. **39 of 137 Channels** were
+  blank-`Track` on 2026-08-09; the warning is informational.
 
 ### Where things stand, and what's actually next
 
 Live counts as of 2026-07-30: **106 Videos** (16 `Queued`, ceiling 30), **88 Channels**, 5 with
 `Harvest?` ticked (`@WayneStLedger`, `@M365CopilotConnection`, `@MicrosoftCommunityLearning`,
 `@KevinStratvert`, `@your365coach`).
+
+Phase 4 hygiene was completed 2026-08-09: 137 Channels, 216 Videos, zero Videos without a Channel
+link, zero duplicate Video IDs, and zero Harvest-ticked Channels without a Source URL. The two junk
+Video rows were deleted; blank Track no longer gates triage.
 
 1. **Triage the 16 Queued** before sweeping more — the ceiling will halt a batch partway at 30, by
    design. This is the bottleneck; adding capture volume against it is the one move that makes

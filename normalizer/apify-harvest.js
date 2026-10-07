@@ -9,7 +9,7 @@
 //   - --max-results and --oldest-post-date are MANDATORY on every run,
 //     dry-run or not. No unbounded channel pulls. (Guardrail.)
 //   - Queue-depth ceiling: stops before any channel while the Triage
-//     Status=Queued count in Airtable is at/above --queue-ceiling (default
+//     Status=Queued, Triaged At blank ("untriaged") count in Airtable is at/above --queue-ceiling (default
 //     30). Re-checked per channel, not once per run — see main().
 //   - --dry-run performs all reads (Apify call + Airtable existence checks)
 //     but no writes, and prints exactly what it would have written.
@@ -28,7 +28,7 @@ const path = require('node:path');
 const { runActorSync } = require('./lib/apify-client');
 const { buildVideoFields } = require('./lib/transform');
 const {
-  countQueued,
+  countUntriaged,
   listHarvestChannels,
   patchChannel,
   upsertChannel,
@@ -88,7 +88,7 @@ Required in both modes (guardrail: no unbounded channel pulls):
   --oldest-post-date <date>    Only videos on/after this date (ISO, or relative like "7 days")
 
 Options:
-  --queue-ceiling <n>          Stop before any channel whose Queued count >= n (default 30)
+  --queue-ceiling <n>          Stop before any channel once untriaged videos >= n (default 30)
   --dry-run                    Do every read, print intended writes, write nothing
   --save-raw <path>            Dump the raw Apify dataset to <path> (one file per channel in batch mode)
   --help                       Show this message
@@ -427,13 +427,13 @@ async function main() {
     // guardrail stops guarding at exactly the moment volume arrives — the
     // refinery's bottleneck is the human review gate, and this is what keeps
     // capture from outrunning it.
-    const queuedCount = await countQueued(airtableKey, baseId);
-    if (queuedCount >= args.queueCeiling) {
-      stopped = { queuedCount, remaining: channels.slice(index) };
+    const untriagedCount = await countUntriaged(airtableKey, baseId);
+    if (untriagedCount >= args.queueCeiling) {
+      stopped = { untriagedCount, remaining: channels.slice(index) };
       break;
     }
 
-    console.log(`\n=== [${index + 1}/${channels.length}] ${channel.channelName} — ${queuedCount} Queued (ceiling: ${args.queueCeiling}) ===`);
+    console.log(`\n=== [${index + 1}/${channels.length}] ${channel.channelName} — ${untriagedCount} untriaged (ceiling: ${args.queueCeiling}) ===`);
 
     // One bad channel must not abandon the rest of the batch.
     try {
@@ -467,7 +467,7 @@ async function main() {
 
   if (stopped) {
     console.error(
-      `\nStopped before ${stopped.remaining.length} remaining channel(s): Queued count (${stopped.queuedCount}) reached the ceiling (${args.queueCeiling}). The refinery's bottleneck is the human review gate, not capture — clear the queue, then re-run.\n  Not swept: ${stopped.remaining.map((c) => c.channelName).join(', ')}`
+      `\nStopped before ${stopped.remaining.length} remaining channel(s): untriaged count (${stopped.untriagedCount}) reached the ceiling (${args.queueCeiling}). The refinery's bottleneck is the human review gate, not capture — triage the queue (aihs-refinery: triage.js, then triage-confirm.js --apply), then re-run.\n  Not swept: ${stopped.remaining.map((c) => c.channelName).join(', ')}`
     );
     process.exitCode = 1;
   }

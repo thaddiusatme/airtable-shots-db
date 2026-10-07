@@ -22,7 +22,7 @@ const {
   listPlaylistItems,
 } = require('../playlist-drain/playlist-manager');
 const { sweepChannel } = require('../normalizer/apify-harvest');
-const { countQueued, findVideoByVideoId } = require('../normalizer/lib/airtable-client');
+const { countUntriaged, findVideoByVideoId } = require('../normalizer/lib/airtable-client');
 
 const STATE_DIR = path.join(__dirname, 'state');
 const LOCK_PATH = path.join(STATE_DIR, 'run.lock');
@@ -56,7 +56,7 @@ async function inventoryBusinessPlaylists({ businessYoutube, config, listPlaylis
       unavailable: unavailable.length,
     });
     for (const item of items) {
-      flatItems.push({ playlist: playlistConfig.name, videoId: item.videoId, playlistItemId: item.playlistItemId, position: item.position });
+      flatItems.push({ playlist: playlistConfig.name, videoId: item.videoId, playlistItemId: item.playlistItemId, position: item.position, addedAt: item.addedAt || null });
     }
   }
 
@@ -79,6 +79,22 @@ async function inventoryBusinessPlaylists({ businessYoutube, config, listPlaylis
   };
 }
 
+// Harvest order when not everything fits under the ceiling: the video saved
+// longest ago goes first. `addedAt` is when the item was added to its
+// playlist; a video in two playlists uses the earlier one. Undated items go
+// last, and ties keep the inventory's order (playlist config, then position),
+// which was the whole ordering before this.
+function oldestSavedFirst(videoIds, byVideoId) {
+  const earliest = (videoId) => {
+    const times = (byVideoId.get(videoId) || []).map((item) => Date.parse(item.addedAt)).filter(Number.isFinite);
+    return times.length ? Math.min(...times) : Infinity;
+  };
+  return videoIds
+    .map((videoId, index) => ({ videoId, index, at: earliest(videoId) }))
+    .sort((a, b) => (a.at === b.at ? a.index - b.index : a.at < b.at ? -1 : 1))
+    .map((entry) => entry.videoId);
+}
+
 // Classify each unique videoId: already capture-complete (drain-eligible) vs
 // still needs harvesting. Reuses the same hasVerifiedTranscript rule the
 // tested drain primitive already uses, so this classification and the
@@ -94,7 +110,7 @@ async function classifyVideos({ uniqueVideoIds, findVideo }) {
   return { needsHarvest, alreadyCaptured };
 }
 
-// Bounded harvest: re-reads the live Queued count before EVERY batch (never
+// Bounded harvest: re-reads the live untriaged count before EVERY batch (never
 // an in-memory running total) and stops the moment headroom or the run's own
 // cost cap is exhausted. Review finding: "--video-urls represents all
 // supplied URLs as one pseudo-channel... The Queued ceiling is checked once
@@ -111,7 +127,7 @@ async function boundedHarvest({
   perBatchCap,
   costCap,
   oldestPostDate,
-  countQueuedFn,
+  countUntriagedFn,
   sweepChannelFn,
   findVideo,
   ledgerPath,
@@ -127,10 +143,10 @@ async function boundedHarvest({
       stoppedReason = `cost cap reached (${costCap} videos this run)`;
       break;
     }
-    const queuedCount = await countQueuedFn();
-    const headroom = queueCeiling - queuedCount;
+    const untriagedCount = await countUntriagedFn();
+    const headroom = queueCeiling - untriagedCount;
     if (headroom <= 0) {
-      stoppedReason = `queue ceiling reached (${queuedCount}/${queueCeiling} Queued — 0 headroom)`;
+      stoppedReason = `queue ceiling reached (${untriagedCount}/${queueCeiling} untriaged — 0 headroom)`;
       break;
     }
     const batchSize = Math.max(0, Math.min(headroom, perBatchCap, remaining.length, costCap - totalRequested));
@@ -213,7 +229,7 @@ async function runBusinessSweep({
   lockPath = LOCK_PATH,
   ledgerPath = LEDGER_PATH,
   now = () => Date.now(),
-  countQueuedFn = countQueued.bind(null, airtableKey, baseId),
+  countUntriagedFn = countUntriaged.bind(null, airtableKey, baseId),
   findVideo = (videoId) => findVideoByVideoId(airtableKey, baseId, videoId),
   sweepChannelFn = sweepChannel,
   drainPlaylistsFn = drainPlaylists,
@@ -234,6 +250,7 @@ async function runBusinessSweep({
     heartbeat(lockPath, { now: now() });
 
     const classification = await classifyVideos({ uniqueVideoIds: inventory.uniqueVideoIds, findVideo });
+    classification.needsHarvest = oldestSavedFirst(classification.needsHarvest, inventory.byVideoId);
 
     let harvest = { batches: [], remaining: classification.needsHarvest, stoppedReason: 'apply=false — harvest is a preview only', totalRequested: 0 };
     if (apply) {
@@ -246,7 +263,7 @@ async function runBusinessSweep({
         perBatchCap,
         costCap,
         oldestPostDate,
-        countQueuedFn,
+        countUntriagedFn,
         sweepChannelFn,
         findVideo,
         ledgerPath,
@@ -417,6 +434,7 @@ module.exports = {
   watchUrl,
   inventoryBusinessPlaylists,
   classifyVideos,
+  oldestSavedFirst,
   boundedHarvest,
   runBusinessSweep,
   printReport,

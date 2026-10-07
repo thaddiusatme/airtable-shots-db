@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { listPlaylistItems, drainPlaylists, DEFAULT_MAX_WRITES } = require('../playlist-drain/playlist-manager');
-const { runBusinessSweep, boundedHarvest, watchUrl, readLedger, parseArgs } = require('./business-sweep');
+const { runBusinessSweep, boundedHarvest, watchUrl, readLedger, parseArgs, oldestSavedFirst, inventoryBusinessPlaylists } = require('./business-sweep');
 
 function tmpStatePaths() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'business-sweep-'));
@@ -94,7 +94,7 @@ test('dry-run reports inventory, duplicate findings, and the drain gate without 
     now: () => 1000,
     findVideo,
     sweepChannelFn: async () => { sweepChannelCalls += 1; throw new Error('must not be called in dry-run mode'); },
-    countQueuedFn: async () => { throw new Error('must not be called in dry-run mode'); },
+    countUntriagedFn: async () => { throw new Error('must not be called in dry-run mode'); },
     drainPlaylistsFn: drainPlaylists,
     listPlaylistItemsFn: listPlaylistItems,
   });
@@ -162,7 +162,7 @@ test('apply mode harvests a bounded batch, reconciles it, then drains what is no
     perBatchCap: 10,
     costCap: 30,
     findVideo,
-    countQueuedFn: async () => 25, // headroom = 5, plenty for the 1 video that needs harvesting
+    countUntriagedFn: async () => 25, // headroom = 5, plenty for the 1 video that needs harvesting
     sweepChannelFn,
     drainPlaylistsFn: drainPlaylists,
     listPlaylistItemsFn: listPlaylistItems,
@@ -199,7 +199,7 @@ test('boundedHarvest stops at zero headroom without ever calling sweepChannel', 
     perBatchCap: 10,
     costCap: 30,
     oldestPostDate: '2015-01-01',
-    countQueuedFn: async () => 30, // headroom = 0
+    countUntriagedFn: async () => 30, // headroom = 0
     sweepChannelFn: async () => { calls += 1; return {}; },
     findVideo: async () => null,
     ledgerPath: tmpStatePaths().ledgerPath,
@@ -219,7 +219,7 @@ test('boundedHarvest stops on a reconciliation gap instead of compounding it int
     perBatchCap: 1, // forces two separate batches if it kept going
     costCap: 30,
     oldestPostDate: '2015-01-01',
-    countQueuedFn: async () => 0, // plenty of headroom
+    countUntriagedFn: async () => 0, // plenty of headroom
     sweepChannelFn: async () => {
       calls += 1;
       // Simulate Apify not returning the requested video at all.
@@ -251,7 +251,7 @@ test('drain gate blocks apply when eligible exceeds the write budget, even thoug
     now: () => 3000,
     maxDrainWrites: 1, // budget of 1, but 2 items are eligible
     findVideo,
-    countQueuedFn: async () => 30,
+    countUntriagedFn: async () => 30,
     sweepChannelFn: async () => { throw new Error('must not be called — nothing needs harvest'); },
     drainPlaylistsFn: drainPlaylists,
     listPlaylistItemsFn: listPlaylistItems,
@@ -291,7 +291,7 @@ test('a partial drain records what failed in the ledger, not just how many', asy
     ledgerPath,
     now: () => 5000,
     findVideo: async (videoId) => ({ id: `rec-${videoId}`, fields: { 'Transcript (Full)': 'text' } }),
-    countQueuedFn: async () => 30, // no headroom — this test is about the drain, not the harvest
+    countUntriagedFn: async () => 30, // no headroom — this test is about the drain, not the harvest
     sweepChannelFn: async () => { throw new Error('harvest must not run in this test'); },
     drainPlaylistsFn: drainPlaylists,
     listPlaylistItemsFn: listPlaylistItems,
@@ -331,4 +331,65 @@ test('runBusinessSweep releases the lock even when a step throws', async () => {
     })
   );
   assert.equal(fs.existsSync(lockPath), false);
+});
+
+// --- harvest order: oldest saved first ---------------------------------------
+
+test('oldestSavedFirst orders by when each video was added to its playlist, undated last, ties in inventory order', () => {
+  const byVideoId = new Map([
+    ['newest', [{ addedAt: '2026-10-05T10:00:00Z' }]],
+    ['undated', [{ addedAt: null }]],
+    ['oldest', [{ addedAt: '2026-09-01T10:00:00Z' }]],
+    ['tie-a', [{ addedAt: '2026-09-20T10:00:00Z' }]],
+    ['tie-b', [{ addedAt: '2026-09-20T10:00:00Z' }]],
+    // In two playlists: the earlier save is the one that counts.
+    ['twice', [{ addedAt: '2026-10-06T10:00:00Z' }, { addedAt: '2026-08-15T10:00:00Z' }]],
+  ]);
+  assert.deepEqual(
+    oldestSavedFirst(['newest', 'undated', 'oldest', 'tie-a', 'tie-b', 'twice'], byVideoId),
+    ['twice', 'oldest', 'tie-a', 'tie-b', 'newest', 'undated']
+  );
+});
+
+test('oldestSavedFirst leaves the order alone when nothing is dated (the pre-2026-10 behavior)', () => {
+  assert.deepEqual(oldestSavedFirst(['a', 'b', 'c'], new Map([['a', [{}]], ['b', [{}]]])), ['a', 'b', 'c']);
+});
+
+test('the sweep harvests the oldest saved video first when headroom fits only one', async () => {
+  const state = tmpStatePaths();
+  const added = { 'vid-new': '2026-10-05T00:00:00Z', 'vid-old': '2026-09-01T00:00:00Z' };
+  // vid-new sits first in the first playlist; config order alone would pick it.
+  const listPlaylistItemsFn = async (_youtube, playlistId) => ({
+    items: playlistId === 'PL-one'
+      ? [{ playlistItemId: 'pi-1', videoId: 'vid-new', position: 0, addedAt: added['vid-new'] }]
+      : [{ playlistItemId: 'pi-2', videoId: 'vid-old', position: 0, addedAt: added['vid-old'] }],
+    unavailable: [],
+  });
+  const inventory = await inventoryBusinessPlaylists({
+    businessYoutube: {},
+    config: { playlists: [{ name: 'One', destinationPlaylistId: 'PL-one' }, { name: 'Two', destinationPlaylistId: 'PL-two' }] },
+    listPlaylistItemsFn,
+  });
+  assert.deepEqual(inventory.uniqueVideoIds, ['vid-new', 'vid-old']);
+
+  const requested = [];
+  const result = await runBusinessSweep({
+    businessYoutube: {},
+    config: { playlists: [{ name: 'One', destinationPlaylistId: 'PL-one' }, { name: 'Two', destinationPlaylistId: 'PL-two' }] },
+    apply: true,
+    queueCeiling: 30,
+    ...state,
+    countUntriagedFn: async () => 29 + requested.length, // room for exactly one
+    findVideo: async () => null,
+    listPlaylistItemsFn,
+    sweepChannelFn: async ({ channel }) => {
+      const ids = channel.sourceUrls.map((url) => url.split('v=')[1]);
+      requested.push(...ids);
+      return { returnedVideoIds: ids, processedVideoIds: [], errors: 0 };
+    },
+    drainPlaylistsFn: async () => ({ eligible: 0, errors: [], unavailable: 0 }),
+  });
+  assert.deepEqual(requested, ['vid-old']);
+  assert.deepEqual(result.harvest.remaining, ['vid-new']);
+  assert.match(result.harvest.stoppedReason, /30\/30 untriaged/);
 });

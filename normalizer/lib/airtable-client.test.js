@@ -2,6 +2,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  countUntriaged,
+  UNTRIAGED_FORMULA,
   findVideoByVideoId,
   findChannelByHandle,
   listAllRecords,
@@ -324,4 +326,26 @@ test('dry run on an existing record returns the PATCH payload it would send', as
 
   assert.equal(result.action, 'would-update');
   assert.deepEqual(result.fields, { 'Transcript Source': 'apify-youtube-scraper' });
+});
+
+// --- the capture ceiling counts untriaged videos, not every Queued one -------
+
+test('countUntriaged asks for Queued videos with no Triaged At stamp, projecting only Video ID', async (t) => {
+  const f = installFetch(() => ({ records: [{ id: 'rec1' }, { id: 'rec2' }, { id: 'rec3' }] }));
+  t.after(f.restore);
+  assert.equal(await countUntriaged(KEY, BASE), 3);
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0].url, /filterByFormula=AND\(\{Triage Status\}='Queued', \{Triaged At\}=BLANK\(\)\)/);
+  assert.match(f.calls[0].url, /fields\[\]=Video ID/);
+  assert.equal(f.calls[0].method, 'GET');
+});
+
+test('the untriaged formula is the one the refinery pins (aihs-refinery/refine/lib/required-fields.js)', () => {
+  assert.equal(UNTRIAGED_FORMULA, "AND({Triage Status}='Queued', {Triaged At}=BLANK())");
+});
+
+test('countUntriaged is 0 on an empty page', async (t) => {
+  const f = installFetch(() => ({}));
+  t.after(f.restore);
+  assert.equal(await countUntriaged(KEY, BASE), 0);
 });

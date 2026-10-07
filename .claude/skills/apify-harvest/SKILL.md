@@ -94,9 +94,11 @@ Per-item failures are isolated: the run continues and exits non-zero. Read the `
 - **429 / rate limit** — there is no retry/backoff (deliberate, documented non-goal). Airtable caps
   at 5 req/s. Re-run; the upsert is idempotent, so it will update rather than duplicate.
 - **Queue ceiling refusal** — working as intended. The bottleneck is the human review gate, not
-  capture. Clear the queue instead of raising `--queue-ceiling`. In `--from-airtable` mode the
+  capture. The ceiling counts *untriaged* videos (`Queued` with a blank `Triaged At`), so the fix is
+  to triage them in `aihs-refinery` (`triage.js` or the Capture page, then `triage-confirm.js
+  --apply`), not to raise `--queue-ceiling`. Videos already kept at triage do not count. In `--from-airtable` mode the
   ceiling is re-checked before *each* channel, so a batch can stop partway; it names the unswept
-  channels and exits 1. Re-running after clearing the queue picks them up — the upsert is
+  channels and exits 1. Re-running after triaging picks them up — the upsert is
   idempotent, so already-swept channels just report `updated`.
 - **`Harvest? is ticked but Source URL is blank`** — a config mistake, not a failure. The run skips
   that channel and continues. Fill in `Source URL` (the `@handle` page form).

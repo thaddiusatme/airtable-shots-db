@@ -155,7 +155,7 @@ rows). Full writeup: `docs/NORMALIZER-MANIFEST.md`.
 
 ```
 Airtable Channels (Harvest? · Source URL · Last harvested · Track)
-        ↓ read config, re-check Queued-count ceiling BEFORE EACH CHANNEL
+        ↓ read config, re-check untriaged-count ceiling BEFORE EACH CHANNEL
 Apify run: startUrls + oldestPostDate + maxResults + downloadSubtitles
         ↓ dataset
 Normalizer (this repo, Node — reuses chrome-extension/lib/transcript-utils.js)
@@ -171,6 +171,15 @@ The ceiling is re-checked **per channel**, not once per run: a single up-front c
 verdict wave ten channels through, which is a guardrail that stops guarding exactly when volume
 arrives.
 
+**What the ceiling counts (changed 2026-10-07): untriaged videos** — `Triage Status = Queued` with a
+blank `Triaged At` (`countUntriaged` in `normalizer/lib/airtable-client.js`). It used to count every
+`Queued` video, which made videos a human had already kept, and that were only waiting on
+extraction, block capture: on 2026-10-05 a harvest stopped at 30/30 with nothing left to triage.
+`Triaged At` is a date field on Videos written only by the refinery's `triage-confirm.js --apply`,
+on every video kept at triage. **This repo never writes it** — a video the normalizer creates has
+it blank, which is exactly what makes a new video count as untriaged. The formula is shared with
+`aihs-refinery/refine/lib/required-fields.js` and both repos pin it in a test.
+
 Decisions already made (2026-07-29):
 
 - Normalizer is a **local Node script in this repo**, reusing `lib/transcript-utils.js` so the GH-64
@@ -185,7 +194,8 @@ refinery's real bottleneck is a human review gate). All shipped except the last:
 - ✅ `maxResults` **and** a date filter mandatory on every run, both modes. No unbounded pulls.
 - ✅ `Intake Source` on Videos — hand-curated (`Watch Later`) vs swept (`Sweep`), so triage can be
   stricter on sweeps. Everything triaged before 2026-07-30 was hand-picked; that's no longer true.
-- ✅ Queue-depth ceiling, **re-checked before each channel** in batch mode.
+- ✅ Queue-depth ceiling, **re-checked before each channel** in batch mode. Counts untriaged videos
+  since 2026-10-07 (see above).
 - ✅ A blank-`Track` audit. Bulk ingest may create Channels with blank `Track`; Track stopped gating
   the refinery working view on 2026-08-06, so this is incomplete metadata rather than a hidden-video
   defect. Kept as a repo-side audit command, `normalizer/audit.js`, rather
@@ -205,8 +215,8 @@ Phase 4 hygiene was completed 2026-08-09: 137 Channels, 216 Videos, zero Videos 
 link, zero duplicate Video IDs, and zero Harvest-ticked Channels without a Source URL. The two junk
 Video rows were deleted; blank Track no longer gates triage.
 
-1. **Triage the 16 Queued** before sweeping more — the ceiling will halt a batch partway at 30, by
-   design. This is the bottleneck; adding capture volume against it is the one move that makes
+1. **Triage before sweeping more** — the ceiling will halt a batch partway at 30 untriaged, by
+   design (16 `Queued` on 2026-07-30; 0 untriaged after the 2026-10-07 triage apply). This is the bottleneck; adding capture volume against it is the one move that makes
    things worse.
 2. Run `node normalizer/audit.js` (above) periodically to catch drift — it's read-only and cheap.
 3. **Unattended invocation stays manual (decided 2026-07-30).** `--from-airtable` makes it

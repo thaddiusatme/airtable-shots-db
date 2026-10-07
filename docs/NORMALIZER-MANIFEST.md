@@ -200,7 +200,8 @@ Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v
 
 - `--max-results` and `--oldest-post-date` are both mandatory CLI args, dry-run or not (guardrail:
   no unbounded channel pulls).
-- Queue-depth ceiling: queries live `Triage Status = Queued` count before running anything;
+- Queue-depth ceiling: queries the live **untriaged** count (`Triage Status = Queued` and `Triaged At`
+  blank; every `Queued` video before 2026-10-07) before running anything;
   refuses to proceed if at/above `--queue-ceiling` (default 30). Rationale is in repo
   `CLAUDE.md` — the refinery's bottleneck is the human review gate, not capture, so an unbounded
   automated feed just piles up unreviewed ore.

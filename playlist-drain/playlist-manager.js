@@ -344,12 +344,29 @@ function hasVerifiedTranscript(record) {
   }
 }
 
+// Which of `playlistItemIds` the playlist still lists, re-reading until none
+// are left or the attempts run out. Returns the ones still there at the end.
+async function itemsStillListed(youtube, playlistId, playlistItemIds, { attempts = 5, delayMs = 1000, sleep = sleepMs } = {}) {
+  let remaining = [...playlistItemIds];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = await listPlaylistItems(youtube, playlistId);
+    const listed = new Set([...current.items, ...current.unavailable].map((item) => item.playlistItemId));
+    remaining = remaining.filter((id) => listed.has(id));
+    if (remaining.length === 0) return [];
+    if (attempt < attempts - 1) await sleep(Math.min(delayMs * (2 ** attempt), 8000));
+  }
+  return remaining;
+}
+
 async function drainPlaylists({
   businessYoutube,
   config,
   findVideo,
   apply = false,
   maxWrites = DEFAULT_MAX_WRITES,
+  verifyAttempts = 5,
+  verifyDelayMs = 1000,
+  sleep = sleepMs,
 }) {
   if (!Number.isInteger(maxWrites) || maxWrites < 1) throw new Error('--max-writes must be a positive integer');
   await assertExpectedChannel(businessYoutube, config.businessChannelId);
@@ -435,13 +452,15 @@ async function drainPlaylists({
     }
 
     if (apply && deletedIds.length > 0) {
-      const after = await listPlaylistItems(businessYoutube, playlistConfig.destinationPlaylistId);
-      const remainingIds = new Set(after.items.map((item) => item.playlistItemId));
-      for (const id of deletedIds) {
-        if (remainingIds.has(id)) {
-          result.errors.push({ playlist: playlistConfig.name, playlistItemId: id, error: 'delete verification failed' });
-          playlistReport.errors += 1;
-        }
+      // A list read straight after a delete can still return the item:
+      // YouTube's playlist listing lags its own writes. A single read here
+      // reported 4 of 25 (2026-10-07) and 2 of 10 (2026-10-09) deletes as
+      // failed when every one had landed. Re-read with backoff, and only
+      // report what is still listed after the last read.
+      const stillListed = await itemsStillListed(businessYoutube, playlistConfig.destinationPlaylistId, deletedIds, { attempts: verifyAttempts, delayMs: verifyDelayMs, sleep });
+      for (const id of stillListed) {
+        result.errors.push({ playlist: playlistConfig.name, playlistItemId: id, error: `delete verification failed (still listed after ${verifyAttempts} reads)` });
+        playlistReport.errors += 1;
       }
     }
   }
@@ -465,5 +484,6 @@ module.exports = {
   readConfig,
   sourceMarker,
   waitForExactPlaylist,
+  itemsStillListed,
   writeConfigAtomic,
 };

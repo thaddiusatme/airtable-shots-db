@@ -32,6 +32,11 @@
       "name": "Finance & Business",
       "sourcePlaylistId": "PLZ8PtMY63lo-hBE0TE1Z5S7ZEJY3GIwBo",
       "destinationPlaylistId": "PLUF_xK0hS7zQ"
+    },
+    {
+      "name": "AI",
+      "sourcePlaylistId": null,
+      "destinationPlaylistId": "PLbQ-Agsc8iu8"
     }
   ]
 }

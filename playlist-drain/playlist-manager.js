@@ -74,6 +74,9 @@ async function listPlaylistItems(youtube, playlistId) {
         playlistItemId: item.id || null,
         videoId,
         position,
+        // When the item was added to THIS playlist (snippet.publishedAt) —
+        // not the video's own publish date (contentDetails.videoPublishedAt).
+        addedAt: item.snippet?.publishedAt || null,
       };
       if (videoId) available.push(normalized);
       else unavailable.push(normalized);

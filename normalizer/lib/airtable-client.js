@@ -40,14 +40,22 @@ async function airtableRequest(apiKey, path, options = {}) {
   return body;
 }
 
-async function countQueued(apiKey, baseId) {
-  const formula = encodeURIComponent(`{Triage Status}='Queued'`);
+// What the capture ceiling counts: Queued videos no human has triaged yet.
+// `Triaged At` is stamped by the refinery's triage-confirm.js on every video
+// kept at triage, so a kept video waiting on extraction no longer blocks
+// capture — that is a different stage's backlog. Before 2026-10 this counted
+// every Queued video, and 30 kept videos stalled the 2026-10-05 harvest.
+// Must match UNTRIAGED_FORMULA in aihs-refinery/refine/lib/required-fields.js.
+const UNTRIAGED_FORMULA = `AND({Triage Status}='Queued', {Triaged At}=BLANK())`;
+
+async function countUntriaged(apiKey, baseId) {
+  const formula = encodeURIComponent(UNTRIAGED_FORMULA);
   const result = await airtableRequest(
     apiKey,
     `${baseId}/Videos?filterByFormula=${formula}&fields%5B%5D=Video%20ID&pageSize=100`
   );
   // Only counts the first page (100) — good enough for a ceiling check; if
-  // there are >100 Queued we're already well past any sane threshold.
+  // there are >100 untriaged we're already well past any sane threshold.
   return result.records?.length ?? 0;
 }
 
@@ -253,7 +261,8 @@ async function upsertVideo(apiKey, baseId, { videoId, channelRecordId, createOnl
 }
 
 module.exports = {
-  countQueued,
+  countUntriaged,
+  UNTRIAGED_FORMULA,
   findVideoByVideoId,
   findChannelByHandle,
   listAllChannels,

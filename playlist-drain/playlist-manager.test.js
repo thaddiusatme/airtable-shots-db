@@ -60,6 +60,15 @@ test('listPlaylistItems paginates, sorts by position, preserves duplicates, and 
   assert.equal(result.unavailable[0].position, 3);
 });
 
+test('listPlaylistItems carries when each item was added to the playlist, not when the video was published', async () => {
+  const item = playlistItem('pi-0', 'video-a', 0);
+  item.snippet.publishedAt = '2026-09-28T17:03:00Z';
+  item.contentDetails.videoPublishedAt = '2024-01-02T00:00:00Z';
+  const youtube = { playlistItems: { list: async () => ({ data: { items: [item, playlistItem('pi-1', 'video-b', 1)] } }) } };
+  const result = await listPlaylistItems(youtube, 'PL-source');
+  assert.deepEqual(result.items.map((entry) => entry.addedAt), ['2026-09-28T17:03:00Z', null]);
+});
+
 test('isOrderedPrefix requires exact order and duplicate multiplicity', () => {
   assert.equal(isOrderedPrefix(['a', 'a'], ['a', 'a', 'b']), true);
   assert.equal(isOrderedPrefix(['a', 'b'], ['a', 'a', 'b']), false);

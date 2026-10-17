@@ -118,20 +118,17 @@ CLAUDE.md called for, to let triage be stricter on unattended-sweep videos.
 
 ## Known base state — don't re-discover these as defects
 
-Confirmed live 2026-07-30 via `node normalizer/audit.js`. The mangled `Video ID` values on the
-first two can't collide with a real upsert, so these are documented deliberately, not deleted.
+Reconfirmed live 2026-08-09 via `node normalizer/audit.js`. The mangled `Video ID` values below
+can't collide with a real upsert, so these are documented deliberate tombstones, not duplicates.
 
 | Record | State |
 |---|---|
 | `reca4ffDtP8QDoFqt` | tombstone, `Video ID = oTphk2SVHNc-DUP`, `Triage Status = Done` — parked duplicate of `oTphk2SVHNc`, not merged (see CLAUDE.md write invariant 2) |
 | `recRYJ0UzWJ3YBrzk` | tombstone, `Video ID = V22VtQ916Y0-DUP-declined`, `Triage Status = Declined` |
-| `recLhZak5ARNtgYbE` | completely empty record — no title, no Video ID, no status |
-| `recRlmmrTXdGxFNTb` | stub — has `Video ID = 6KktB5aNrjE`, no title, no Triage Status |
 
-The audit also surfaces two *real* Videos with no Channel link — `I4kGV5sJEdA` and `ib74sLgjIBM`,
-both `Triage Status = Done`. Not junk (real titles, real status), just orphaned from their Channel
-link somehow. Not investigated as part of the 2026-07-30 pass; `audit.js` will keep surfacing them
-until fixed or explicitly noted here as accepted.
+Phase 4 cleanup completed 2026-08-09: junk rows `recLhZak5ARNtgYbE` and
+`recRlmmrTXdGxFNTb` were deleted; real videos `I4kGV5sJEdA` and `ib74sLgjIBM` now have Channel
+links. The live audit's orphan and duplicate-ID checks both read `[ok]`.
 
 ## Verified facts about the Apify actor (streamers/youtube-scraper, h7sDV53CddomktSi5)
 
@@ -203,7 +200,8 @@ Confirmed via two real single-video probe runs (`https://www.youtube.com/watch?v
 
 - `--max-results` and `--oldest-post-date` are both mandatory CLI args, dry-run or not (guardrail:
   no unbounded channel pulls).
-- Queue-depth ceiling: queries live `Triage Status = Queued` count before running anything;
+- Queue-depth ceiling: queries the live **untriaged** count (`Triage Status = Queued` and `Triaged At`
+  blank; every `Queued` video before 2026-10-07) before running anything;
   refuses to proceed if at/above `--queue-ceiling` (default 30). Rationale is in repo
   `CLAUDE.md` — the refinery's bottleneck is the human review gate, not capture, so an unbounded
   automated feed just piles up unreviewed ore.
@@ -339,10 +337,9 @@ What remains:
 
 1. ~~Set `Track` on `@WayneStLedger`~~ — **done**, it is `Tooling-watch` as of 2026-07-30.
 
-2. **Track-unset view** — a Channels grid view filtered to blank `Track`. Manual UI step (the
-   Airtable MCP has no create-view tool). Now **4 of 88 Channels** have blank `Track`
-   (`@Jasper_Tech`, `@BulbDigital`, `@3.7Million`, `@WizardsandWarriors`) — down from 29, but the
-   view is still worth having, because a blank-`Track` channel fails by vanishing silently.
+2. **Track-unset metadata** — Track stopped gating the working view on 2026-08-06. The audit still
+   reports blank values (39 of 137 Channels on 2026-08-09), but they no longer hide Videos from
+   triage and therefore are not a routing defect.
 
 3. Decide how this runs unattended — cron on an always-on machine? A Claude scheduled task? Manual?
    Nothing in `apify-harvest.js` assumes an invocation method, and `--from-airtable` now makes an

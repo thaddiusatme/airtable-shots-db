@@ -407,8 +407,8 @@ No build step. Vanilla JS. Load unpacked at `chrome://extensions/`.
   owned by the AIHS refinery / Threads pipeline project (2026-08-03). `docs/NORMALIZER-MANIFEST.md`
   and `normalizer/audit.js` predate both and don't know they exist — don't mistake either table for
   dead schema during exploration, and don't extend `audit.js` to cover them without checking with
-  the refinery project first, since their write invariants (draft-only Metricool pushes, never
-  auto-publish) live there, not here.
+  the refinery project first, since their write invariants (see "Publishing — Metricool" in
+  `aihs-refinery/CLAUDE.md`) live there, not here.
 
 ## Dead — do not resurrect
 

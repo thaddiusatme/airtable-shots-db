@@ -13,6 +13,7 @@ const {
   drainPlaylists,
   readConfig,
   waitForExactPlaylist,
+  itemsStillListed,
   writeConfigAtomic,
 } = require('./playlist-manager');
 
@@ -359,4 +360,71 @@ test('drainPlaylists counts a 404 delete attempt against max writes and treats i
   assert.equal(result.writes, 1);
   assert.equal(result.alreadyRemoved, 1);
   assert.equal(result.deferred, 1);
+});
+
+// --- delete verification: the listing lags the delete -------------------------
+
+function laggingYoutube({ staleReads }) {
+  let items = [playlistItem('pi-1', 'captured', 0), playlistItem('pi-2', 'captured-2', 1)];
+  const deleted = new Set();
+  let readsAfterDelete = 0;
+  const state = { lists: 0 };
+  return {
+    state,
+    youtube: {
+      channels: { list: async () => ({ data: { items: [{ id: 'UC-business' }] } }) },
+      playlistItems: {
+        list: async () => {
+          state.lists += 1;
+          if (deleted.size === 0) return { data: { items } };
+          readsAfterDelete += 1;
+          // For the first `staleReads` reads after deleting, YouTube still lists pi-2.
+          const visible = readsAfterDelete <= staleReads ? items.filter((item) => !deleted.has(item.id) || item.id === 'pi-2') : items.filter((item) => !deleted.has(item.id));
+          return { data: { items: visible } };
+        },
+        delete: async ({ id }) => { deleted.add(id); },
+      },
+    },
+  };
+}
+
+const drainArgs = (youtube, over = {}) => ({
+  businessYoutube: youtube,
+  config: { businessChannelId: 'UC-business', playlists: [{ name: 'AI', destinationPlaylistId: 'PL-destination' }] },
+  findVideo: async () => ({ id: 'rec-1', fields: { 'Transcript (Full)': 'done' } }),
+  apply: true,
+  ...over,
+});
+
+test('drainPlaylists does not report a delete as failed when the listing only lags', async () => {
+  const { youtube } = laggingYoutube({ staleReads: 2 });
+  const sleeps = [];
+  const result = await drainPlaylists(drainArgs(youtube, { sleep: async (ms) => sleeps.push(ms) }));
+  assert.equal(result.deleted, 2);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(sleeps, [1000, 2000], 'backs off between reads and stops as soon as the item is gone');
+});
+
+test('drainPlaylists still reports an item that is listed after every read', async () => {
+  const { youtube } = laggingYoutube({ staleReads: Infinity });
+  const sleeps = [];
+  const result = await drainPlaylists(drainArgs(youtube, { sleep: async (ms) => sleeps.push(ms), verifyAttempts: 3 }));
+  assert.equal(result.deleted, 2);
+  assert.deepEqual(result.errors, [{ playlist: 'AI', playlistItemId: 'pi-2', error: 'delete verification failed (still listed after 3 reads)' }]);
+  assert.deepEqual(sleeps, [1000, 2000], 'no sleep after the last read');
+});
+
+test('drainPlaylists reads once and does not sleep when the listing is already current', async () => {
+  const { youtube, state } = laggingYoutube({ staleReads: 0 });
+  const sleeps = [];
+  const result = await drainPlaylists(drainArgs(youtube, { sleep: async (ms) => sleeps.push(ms) }));
+  assert.deepEqual([result.errors.length, sleeps.length], [0, 0]);
+  assert.equal(state.lists, 2, 'one read to plan, one to verify');
+});
+
+test('itemsStillListed returns only what is left, counting unavailable entries as listed', async () => {
+  const youtube = { playlistItems: { list: async () => ({ data: { items: [playlistItem('pi-a', 'vid-a', 0), playlistItem('pi-gone-video', null, 1)] } }) } };
+  const sleeps = [];
+  assert.deepEqual(await itemsStillListed(youtube, 'PL-x', ['pi-a', 'pi-b', 'pi-gone-video'], { attempts: 2, sleep: async (ms) => sleeps.push(ms) }), ['pi-a', 'pi-gone-video']);
+  assert.deepEqual(sleeps, [1000]);
 });

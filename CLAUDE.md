@@ -3,11 +3,11 @@
 ## What this project is
 
 Capture YouTube transcripts and metadata into Airtable, so the **AIHS content refinery** (separate
-project, `~/claude/Youtube Transcripts`) can turn them into teardowns, digests and content ideas.
+project, `~/repos/aihs-refinery`) can turn them into teardowns, digests and content ideas.
 
 This repo owns **capture only**. Triage, treatment, and everything downstream lives in the refinery.
 
-## Current state — 2026-08-04
+## Capture mechanism (decided 2026-07-29)
 
 **The pivot from browser automation to a hosted scraper is complete.** Five months of work proved
 that the transcript can be *extracted* reliably but not *delivered* reliably without a human
@@ -141,15 +141,8 @@ watch URLs as N `startUrls` entries in one actor call — and per `lib/apify-cli
 comment, a single-video `startUrls` run is the actor's **original, most-verified** input shape
 (2026-07-29 probe), more so than channel or playlist mode ever was. `--max-results` must be ≥ the
 number of URLs given — unlike the cost-guardrail role it plays elsewhere, here a too-low value would
-silently drop one of the exact videos named. **LIVE verified 2026-08-06**: 15 videos captured with
-zero errors (Airtable Videos records `rec22vOqgMWtR1k7h`, `rec3nUNboQzHfsbtX`, `rec7TUh9aSx6ryrUy`,
-`recAAHK8oDkfDCOnr`, `recDxeXxFPN5lRK3Z`, `recEU7MjVwK0m0ELH`, `recTN47moIsaVNHio`,
-`recVTZcWmPWF8a0HF`, `recYUJ637sS1kj4S9`, `reccuv1D41UBgBYFd`, `reckoIcn38uhsp5I9`,
-`rectDqcobiYLWdgji`, `recvjGbLx5nPoEJlW`, `recvtYPblV8WGGlqE`, `recxite5fOnskUHiH` — each confirmed
-by querying `Video ID`, with a nonempty transcript, exactly one Channel link, `Triage Status =
-Queued`). 8 new Channels created (`GaryVee`, `Mike Tholfsen`, `BIM Design Studio`,
-`Using Generative AI`, `OpenAI`, `iWorkstation`, `Alex Finn`, `Dawood Khan | Akceleration`), each
-confirmed `@handle`-keyed with no fork and blank `Track` left for a human to set — do not guess it.
+silently drop one of the exact videos named. **LIVE verified 2026-08-06** (15 videos, zero errors;
+record IDs in the manifest). New Channels get blank `Track` for a human to set — do not guess it.
 Not yet wired into `--from-airtable` (same reason as playlist mode: these aren't Channels-table
 rows). Full writeup: `docs/NORMALIZER-MANIFEST.md`.
 
@@ -202,21 +195,15 @@ refinery's real bottleneck is a human review gate). All shipped except the last:
   than a manual Airtable view (the Airtable MCP has no create-view tool, so a view would need
   manual UI upkeep with nothing to catch drift). Run `cd normalizer && node audit.js` — it also
   checks for `Harvest?`-ticked channels with no `Source URL`, Videos with no Channel link,
-  duplicate `Video ID`s, and Videos missing `Metrics Captured At`. **39 of 137 Channels** were
-  blank-`Track` on 2026-08-09; the warning is informational.
+  duplicate `Video ID`s, and Videos missing `Metrics Captured At`. The blank-`Track` warning is
+  informational.
 
-### Where things stand, and what's actually next
+### Operating rules
 
-Live counts as of 2026-07-30: **106 Videos** (16 `Queued`, ceiling 30), **88 Channels**, 5 with
-`Harvest?` ticked (`@WayneStLedger`, `@M365CopilotConnection`, `@MicrosoftCommunityLearning`,
-`@KevinStratvert`, `@your365coach`).
-
-Phase 4 hygiene was completed 2026-08-09: 137 Channels, 216 Videos, zero Videos without a Channel
-link, zero duplicate Video IDs, and zero Harvest-ticked Channels without a Source URL. The two junk
-Video rows were deleted; blank Track no longer gates triage.
+Live counts drift; query Airtable or run `node normalizer/audit.js` instead of trusting a number here.
 
 1. **Triage before sweeping more** — the ceiling will halt a batch partway at 30 untriaged, by
-   design (16 `Queued` on 2026-07-30; 0 untriaged after the 2026-10-07 triage apply). This is the bottleneck; adding capture volume against it is the one move that makes
+   design. This is the bottleneck; adding capture volume against it is the one move that makes
    things worse.
 2. Run `node normalizer/audit.js` (above) periodically to catch drift — it's read-only and cheap.
 3. **Unattended invocation stays manual (decided 2026-07-30).** `--from-airtable` makes it
@@ -261,6 +248,9 @@ correction.
   - Stats: `Subscribers`, `Total Videos`, `Total Views`, `Channel Description`, `Stats Captured At`
 
 ### Write invariants — non-negotiable, inherited by the normalizer
+
+`aihs-refinery/CLAUDE.md` cites rules 4, 6, 7 and 8 by number. Renumber them only together with
+that file.
 
 1. **Upsert by `Video ID`.** Never blind create.
 2. **Two records sharing one `Video ID` break the upsert.** Check before creating anything by hand;
